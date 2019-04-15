@@ -25,9 +25,11 @@ func Parse(raw string, kind Kind, first bool) (*URL, error) {
 	// want them to be parsed according to the better and more specific match.
 	// If we don't match anything, we assume the URL is a local path.
 	if isDockerURL(raw) {
-		return parseDocker(raw, kind, first)
-	} else if isSCPSSHURL(raw, kind) {
-		return parseSCPSSH(raw, kind)
+		return parseDocker(raw, alpha)
+	} else if isKubectlURL(raw) {
+		return parseKubectl(raw, alpha)
+	} else if isSCPSSHURL(raw) {
+		return parseSCPSSH(raw)
 	} else {
 		return parseLocal(raw, kind)
 	}
