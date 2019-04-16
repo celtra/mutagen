@@ -66,7 +66,8 @@ func connect(logger *logging.Logger, transport Transport, mode, prompter string,
 	}, pathSeparator)
 
 	// Compute the command to invoke.
-	command := fmt.Sprintf("%s %s", agentInvocationPath, mode)
+	// FIXME: This shouldn't be hardcoded to /root
+	command := fmt.Sprintf("/root/%s %s", agentInvocationPath, mode)
 
 	// Create an agent process.
 	message := "Connecting to agent (POSIX)..."
@@ -80,6 +81,7 @@ func connect(logger *logging.Logger, transport Transport, mode, prompter string,
 	if err != nil {
 		return nil, false, false, errors.Wrap(err, "unable to create agent command")
 	}
+	prompt.Message(prompter, "####1")
 
 	// Create a connection that wraps the process' standard input/output. We
 	// set a non-zero kill delay so that, if there's a handshake failure, the
