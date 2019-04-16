@@ -81,7 +81,6 @@ func connect(logger *logging.Logger, transport Transport, mode, prompter string,
 	if err != nil {
 		return nil, false, false, errors.Wrap(err, "unable to create agent command")
 	}
-	prompt.Message(prompter, "####1")
 
 	// Create a connection that wraps the process' standard input/output. We
 	// set a non-zero kill delay so that, if there's a handshake failure, the
