@@ -67,7 +67,10 @@ func connect(logger *logging.Logger, transport Transport, mode, prompter string,
 
 	// Compute the command to invoke.
 	// FIXME: This shouldn't be hardcoded to /root
-	command := fmt.Sprintf("/root/%s %s", agentInvocationPath, mode)
+	command := fmt.Sprintf("%s %s", agentInvocationPath, ModeEndpoint)
+	if !cmdExe {
+		command = "./" + command
+	}
 
 	// Create an agent process.
 	message := "Connecting to agent (POSIX)..."
