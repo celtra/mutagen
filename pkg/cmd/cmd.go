@@ -3,13 +3,13 @@ package cmd
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/havoc-io/mutagen/cmd"
+	"github.com/mutagen-io/mutagen/cmd"
 
 	// Explicitly import packages that need to register protocol handlers.
-	_ "github.com/havoc-io/mutagen/pkg/protocols/docker"
-	_ "github.com/havoc-io/mutagen/pkg/protocols/kubectl"
-	_ "github.com/havoc-io/mutagen/pkg/protocols/local"
-	_ "github.com/havoc-io/mutagen/pkg/protocols/ssh"
+	_ "github.com/mutagen-io/mutagen/pkg/protocols/docker"
+	_ "github.com/mutagen-io/mutagen/pkg/protocols/kubectl"
+	_ "github.com/mutagen-io/mutagen/pkg/protocols/local"
+	_ "github.com/mutagen-io/mutagen/pkg/protocols/ssh"
 )
 
 func rootMain(command *cobra.Command, arguments []string) error {
