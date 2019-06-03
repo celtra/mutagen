@@ -251,9 +251,9 @@ func (t *transport) Copy(localPath, remoteName string) error {
 	kubectlCommand.Env = environment
 
 	// Run the operation.
-	if err := kubectlCommand.Run(); err != nil {
+	if out, err := kubectlCommand.Output(); err != nil {
 		cmdString := strings.Join([]string{t.kubectlExecutable, "cp", "--no-preserve", localPath, containerPath}, " ")
-		return errors.Wrap(err, fmt.Sprintf("unable to run Kubectl copy command (%s): %s", cmdString, err))
+		return errors.Wrap(err, fmt.Sprintf("unable to run Kubectl copy command (%s): %s", cmdString, out))
 	}
 
 	// Success.
