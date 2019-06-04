@@ -237,7 +237,7 @@ func (t *transport) Copy(localPath, remoteName string) error {
 
 	// Create the command.
 	// We dont want to preserve user from host user, but use default container user.
-	kubectlCommand := exec.Command(t.kubectlExecutable, "cp", "--no-preserve", localPath, containerPath)
+	kubectlCommand := exec.Command(t.kubectlExecutable, "cp", localPath, containerPath)
 
 	// Force it to run detached.
 	kubectlCommand.SysProcAttr = process.DetachedProcessAttributes()
