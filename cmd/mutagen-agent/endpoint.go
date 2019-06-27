@@ -12,8 +12,8 @@ import (
 
 	"github.com/havoc-io/mutagen/cmd"
 	"github.com/havoc-io/mutagen/pkg/agent"
-	"github.com/havoc-io/mutagen/pkg/protocols/local"
-	"github.com/havoc-io/mutagen/pkg/remote"
+	"github.com/havoc-io/mutagen/pkg/housekeeping"
+	"github.com/havoc-io/mutagen/pkg/session/endpoint/remote"
 )
 
 const (
@@ -22,22 +22,10 @@ const (
 	housekeepingInterval = 24 * time.Hour
 )
 
-// housekeep performs a combined housekeeping operation.
-func housekeep() {
-	// Perform agent housekeeping.
-	agent.Housekeep()
-
-	// Perform cache housekeeping.
-	local.HousekeepCaches()
-
-	// Perform staging directory housekeeping.
-	local.HousekeepStaging()
-}
-
 func housekeepRegularly(context context.Context) {
 	// Perform an initial housekeeping operation since the ticker won't fire
 	// straight away.
-	housekeep()
+	housekeeping.Housekeep()
 
 	// Create a ticker to regulate housekeeping and defer its shutdown.
 	ticker := time.NewTicker(housekeepingInterval)
@@ -49,7 +37,7 @@ func housekeepRegularly(context context.Context) {
 		case <-context.Done():
 			return
 		case <-ticker.C:
-			housekeep()
+			housekeeping.Housekeep()
 		}
 	}
 }

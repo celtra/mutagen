@@ -4,7 +4,7 @@ package mutagen
 // dependencies.
 const LegalNotice = `Mutagen
 
-Copyright (c) 2016 - 2018 Jacob Howard
+Copyright (c) 2016 - 2019 Jacob Howard
 
 Licensed under the terms of the MIT License. A copy of this license can be found
 later in this text or online at https://opensource.org/licenses/MIT.
@@ -284,6 +284,32 @@ Copyright (c) 2014 Bob Matcuk
 
 Used under the terms of the MIT License. A copy of this license can be found
 later in this text or online at https://opensource.org/licenses/MIT.
+
+--------------------------------------------------------------------------------
+
+apimachinery (Kubernetes package)
+
+https://github.com/kubernetes/apimachinery
+
+Copyright (c) 2014 The Kubernetes Authors.
+
+Used under the terms of the Apache License, Version 2.0. A copy of this license
+can be found later in this text or online at
+http://www.apache.org/licenses/LICENSE-2.0.
+
+--------------------------------------------------------------------------------
+
+klog (Kubernetes package)
+
+https://github.com/kubernetes/klog
+
+Fork of glog (https://github.com/golang/glog)
+
+Copyright 2013 Google Inc. All Rights Reserved.
+
+Used under the terms of the Apache License, Version 2.0. A copy of this license
+can be found later in this text or online at
+http://www.apache.org/licenses/LICENSE-2.0.
 
 --------------------------------------------------------------------------------
 

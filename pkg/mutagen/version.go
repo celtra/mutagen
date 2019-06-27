@@ -14,11 +14,11 @@ const (
 	// VersionMinor represents the current minor version of Mutagen.
 	VersionMinor = 9
 	// VersionPatch represents the current patch version of Mutagen.
-	VersionPatch = 0
+	VersionPatch = 1
 	// VersionTag represents a tag to be appended to the Mutagen version string.
 	// It must not contain spaces. If empty, no tag is appended to the version
 	// string.
-	// FIXME: Failed if versiontag is specified!
+
 	VersionTag = ""
 )
 
@@ -40,6 +40,7 @@ func init() {
 type versionBytes [12]byte
 
 // SendVersion writes the current Mutagen version to the specified writer.
+// Version tag components are neither transmitted nor received.
 func SendVersion(writer io.Writer) error {
 	// Compute the version bytes.
 	var data versionBytes
@@ -52,7 +53,8 @@ func SendVersion(writer io.Writer) error {
 	return err
 }
 
-// ReceiveVersion reads version information from the specified reader.
+// ReceiveVersion reads version information from the specified reader. Version
+// tag components are neither transmitted nor received.
 func ReceiveVersion(reader io.Reader) (uint32, uint32, uint32, error) {
 	// Read the bytes.
 	var data versionBytes
@@ -70,7 +72,9 @@ func ReceiveVersion(reader io.Reader) (uint32, uint32, uint32, error) {
 }
 
 // ReceiveAndCompareVersion reads version information from the specified reader
-// and ensures that it matches the current Mutagen version.
+// and ensures that it matches the current Mutagen version. Version tag
+// components are neither transmitted nor received, so they do not enter into
+// this comparison.
 func ReceiveAndCompareVersion(reader io.Reader) (bool, error) {
 	// Receive the version.
 	major, minor, patch, err := ReceiveVersion(reader)

@@ -12,10 +12,10 @@ import (
 
 	"github.com/havoc-io/mutagen/cmd"
 	"github.com/havoc-io/mutagen/pkg/daemon"
-	mgrpc "github.com/havoc-io/mutagen/pkg/grpc"
 	daemonsvc "github.com/havoc-io/mutagen/pkg/service/daemon"
 	promptsvc "github.com/havoc-io/mutagen/pkg/service/prompt"
 	sessionsvc "github.com/havoc-io/mutagen/pkg/service/session"
+	"github.com/havoc-io/mutagen/pkg/session"
 )
 
 func daemonRunMain(command *cobra.Command, arguments []string) error {
@@ -40,27 +40,31 @@ func daemonRunMain(command *cobra.Command, arguments []string) error {
 	signalTermination := make(chan os.Signal, 1)
 	signal.Notify(signalTermination, cmd.TerminationSignals...)
 
-	// Create the gRPC server.
+	// Create a session manager and defer its shutdown.
+	sessionManager, err := session.NewManager()
+	if err != nil {
+		return errors.Wrap(err, "unable to create session manager")
+	}
+	defer sessionManager.Shutdown()
+
+	// Create the gRPC server and defer its stoppage. We use a hard stop rather
+	// than a graceful stop so that it doesn't hang on open requests.
 	server := grpc.NewServer(
-		grpc.MaxSendMsgSize(mgrpc.MaximumIPCMessageSize),
-		grpc.MaxRecvMsgSize(mgrpc.MaximumIPCMessageSize),
+		grpc.MaxSendMsgSize(daemon.MaximumIPCMessageSize),
+		grpc.MaxRecvMsgSize(daemon.MaximumIPCMessageSize),
 	)
+	defer server.Stop()
 
 	// Create and register the daemon service and defer its shutdown.
-	daemonServer := daemonsvc.New()
+	daemonServer := daemonsvc.NewServer()
 	daemonsvc.RegisterDaemonServer(server, daemonServer)
 	defer daemonServer.Shutdown()
 
 	// Create and register the prompt service.
-	promptsvc.RegisterPromptingServer(server, promptsvc.New())
+	promptsvc.RegisterPromptingServer(server, promptsvc.NewServer())
 
-	// Create and register the session service and defer its shutdown.
-	sessionsServer, err := sessionsvc.New()
-	if err != nil {
-		return errors.Wrap(err, "unable to create sessions service")
-	}
-	sessionsvc.RegisterSessionsServer(server, sessionsServer)
-	defer sessionsServer.Shutdown()
+	// Create and register the session service.
+	sessionsvc.RegisterSessionsServer(server, sessionsvc.NewServer(sessionManager))
 
 	// Create the daemon listener and defer its closure.
 	listener, err := daemon.NewListener()
@@ -104,6 +108,9 @@ var daemonRunConfiguration struct {
 func init() {
 	// Grab a handle for the command line flags.
 	flags := daemonRunCommand.Flags()
+
+	// Disable alphabetical sorting of flags in help output.
+	flags.SortFlags = false
 
 	// Manually add a help flag to override the default message. Cobra will
 	// still implement its logic automatically.

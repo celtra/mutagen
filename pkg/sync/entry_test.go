@@ -52,6 +52,30 @@ func TestEntryDirectoryEmptyContentNameInvalid(t *testing.T) {
 	}
 }
 
+func TestEntryDirectoryContentNameWithDotInvalid(t *testing.T) {
+	directory := &Entry{
+		Kind: EntryKind_Directory,
+		Contents: map[string]*Entry{
+			".": testFile1Entry,
+		},
+	}
+	if directory.EnsureValid() == nil {
+		t.Fatal("directory with empty content name considered valid")
+	}
+}
+
+func TestEntryDirectoryContentNameWithDotDotInvalid(t *testing.T) {
+	directory := &Entry{
+		Kind: EntryKind_Directory,
+		Contents: map[string]*Entry{
+			"..": testFile1Entry,
+		},
+	}
+	if directory.EnsureValid() == nil {
+		t.Fatal("directory with empty content name considered valid")
+	}
+}
+
 func TestEntryDirectoryContentNameWithPathSeparatorInvalid(t *testing.T) {
 	directory := &Entry{
 		Kind: EntryKind_Directory,
@@ -197,6 +221,62 @@ func TestEntryInvalidKindInvalid(t *testing.T) {
 	entry := &Entry{Kind: (EntryKind_Symlink + 1)}
 	if entry.EnsureValid() == nil {
 		t.Fatal("entry with invalid kind considered valid")
+	}
+}
+
+func TestEntryWalk(t *testing.T) {
+	// Set up test cases.
+	testCases := []struct {
+		entry            *Entry
+		expectedContents map[string]*Entry
+	}{
+		{nil, map[string]*Entry{"": nil}},
+		{testFile1Entry, map[string]*Entry{"": testFile1Entry}},
+		{testDirectoryWithCaseConflict, map[string]*Entry{
+			"":         testDirectoryWithCaseConflict,
+			"FileName": testFile1Entry,
+			"FILENAME": testFile3Entry,
+		}},
+		{testDirectory3Entry, map[string]*Entry{
+			"":                                   testDirectory3Entry,
+			"empty dir\xc3\xa9ctory":             testDirectory3Entry.Contents["empty dir\xc3\xa9ctory"],
+			"empty dir\xc3\xa9ctory/new subfile": testFile3Entry,
+			"renamed directory":                  testDirectory3Entry.Contents["renamed directory"],
+			"renamed directory/subdirectory":     testDirectory3Entry.Contents["renamed directory"].Contents["subdirectory"],
+			"renamed directory/subfile":          testFile3Entry,
+			"renamed directory/another symlink":  testDirectory3Entry.Contents["renamed directory"].Contents["another symlink"],
+			"executable file":                    testFile2Entry,
+			"new symlink":                        testDirectory3Entry.Contents["new symlink"],
+		}},
+	}
+
+	// Process test cases.
+	for _, testCase := range testCases {
+		// Perform walking to extract contents.
+		contents := make(map[string]*Entry)
+		testCase.entry.walk("", func(path string, entry *Entry) {
+			contents[path] = entry
+		})
+
+		// Compare content lengths.
+		if len(contents) != len(testCase.expectedContents) {
+			t.Error(
+				"content length does not match expected:",
+				len(contents),
+				"!=",
+				len(testCase.expectedContents),
+			)
+			continue
+		}
+
+		// Compare contents.
+		for path, expectedEntry := range testCase.expectedContents {
+			if entry, ok := contents[path]; !ok {
+				t.Error("unable to find expected content path")
+			} else if !entry.Equal(expectedEntry) {
+				t.Error("content entry not equal to expected")
+			}
+		}
 	}
 }
 

@@ -34,28 +34,27 @@ func init() {
 	// Grab a handle for the command line flags.
 	flags := daemonCommand.Flags()
 
+	// Disable alphabetical sorting of flags in help output.
+	flags.SortFlags = false
+
 	// Manually add a help flag to override the default message. Cobra will
 	// still implement its logic automatically.
 	flags.BoolVarP(&daemonConfiguration.help, "help", "h", false, "Show help information")
 
-	// Register commands. We do this here (rather than in individual init
-	// functions) so that we can control the order. If registration isn't
-	// supported on the platform, then we exclude those commands. For some
-	// reason, AddCommand can't be invoked twice, so we can't add these commands
-	// conditionally later.
+	// Compute supported commands. We have to do this in advance since
+	// AddCommand can't be invoked twice.
+	supportedCommands := []*cobra.Command{
+		daemonRunCommand,
+		daemonStartCommand,
+		daemonStopCommand,
+	}
 	if daemon.RegistrationSupported {
-		daemonCommand.AddCommand(
-			daemonRunCommand,
-			daemonStartCommand,
-			daemonStopCommand,
+		supportedCommands = append(supportedCommands,
 			daemonRegisterCommand,
 			daemonUnregisterCommand,
 		)
-	} else {
-		daemonCommand.AddCommand(
-			daemonRunCommand,
-			daemonStartCommand,
-			daemonStopCommand,
-		)
 	}
+
+	// Register commands.
+	daemonCommand.AddCommand(supportedCommands...)
 }

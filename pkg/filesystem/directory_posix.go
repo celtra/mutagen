@@ -12,6 +12,8 @@ import (
 	"github.com/pkg/errors"
 
 	"golang.org/x/sys/unix"
+
+	fssyscall "github.com/havoc-io/mutagen/pkg/filesystem/internal/syscall"
 )
 
 // ensureValidName verifies that the provided name does not reference the
@@ -39,16 +41,29 @@ func ensureValidName(name string) error {
 // the directory's contents. All of its operations avoid the traversal of
 // symbolic links.
 type Directory struct {
-	// file is the underlying os.File object corresponding to the directory.
-	file *os.File
-	// descriptor is the cached file descriptor extracted from the os.File
-	// object.
+	// descriptor is the file descriptor for the directory, designed to be used
+	// in conjunction with POSIX *at functions. It is wrapped by the os.File
+	// object below (file) and should not be closed directly.
 	descriptor int
+	// file is an os.File object which wraps the directory descriptor. It is
+	// required for its Readdirnames function, since there's no other portable
+	// way to do this from Go.
+	file *os.File
 }
 
 // Close closes the directory.
 func (d *Directory) Close() error {
 	return d.file.Close()
+}
+
+// Descriptor provides access to the raw file descriptor underlying the
+// directory. It should not be used or retained beyond the point in time where
+// the Close method is called, and it should not be closed externally. Its
+// usefulness is to code which relies on file-descriptor-based operations. This
+// method does not exist on Windows systems, so it should only be used in
+// POSIX-specific code.
+func (d *Directory) Descriptor() int {
+	return d.descriptor
 }
 
 // CreateDirectory creates a new directory with the specified name inside the
@@ -61,7 +76,7 @@ func (d *Directory) CreateDirectory(name string) error {
 	}
 
 	// Create the directory.
-	return mkdirat(d.descriptor, name, 0700)
+	return unix.Mkdirat(d.descriptor, name, 0700)
 }
 
 // maximumTemporaryFileRetries is the maximum number of retries that we'll
@@ -98,7 +113,7 @@ func (d *Directory) CreateTemporaryFile(pattern string) (string, WritableFile, e
 
 		// Attempt to open the file. Note that we needn't specify O_NOFOLLOW
 		// here since we're enforcing that the file doesn't already exist.
-		descriptor, err := openat(d.descriptor, name, os.O_RDWR|os.O_CREATE|os.O_EXCL|unix.O_CLOEXEC, 0600)
+		descriptor, err := unix.Openat(d.descriptor, name, unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC, 0600)
 		if err != nil {
 			if os.IsExist(err) {
 				continue
@@ -128,7 +143,7 @@ func (d *Directory) CreateSymbolicLink(name, target string) error {
 	}
 
 	// Create the symbolic link.
-	return symlinkat(target, d.descriptor, name)
+	return fssyscall.Symlinkat(target, d.descriptor, name)
 }
 
 // SetPermissions sets the permissions on the content within the directory
@@ -147,16 +162,33 @@ func (d *Directory) SetPermissions(name string, ownership *OwnershipSpecificatio
 
 	// Set ownership information, if specified.
 	if ownership != nil && (ownership.ownerID != -1 || ownership.groupID != -1) {
-		if err := fchownat(d.descriptor, name, ownership.ownerID, ownership.groupID, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		if err := unix.Fchownat(d.descriptor, name, ownership.ownerID, ownership.groupID, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 			return errors.Wrap(err, "unable to set ownership information")
 		}
 	}
 
 	// Set permissions, if specified.
-	mode = mode & ModePermissionsMask
+	//
+	// HACK: On Linux, the AT_SYMLINK_NOFOLLOW flag is not supported by fchmodat
+	// and will result in an ENOTSUP error, so we have to use a workaround that
+	// opens a file and then uses fchmod in order to avoid setting permissions
+	// across a symbolic link. Fortunately, because we're on Linux, we don't
+	// need the looping construct used above to avoid golang/go#11180.
+	mode &= ModePermissionsMask
 	if mode != 0 {
-		if err := fchmodat(d.descriptor, name, uint32(mode), unix.AT_SYMLINK_NOFOLLOW); err != nil {
-			return errors.Wrap(err, "unable to set permission bits")
+		if runtime.GOOS == "linux" {
+			if f, err := unix.Openat(d.descriptor, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0); err != nil {
+				return errors.Wrap(err, "unable to open file")
+			} else if err = unix.Fchmod(f, uint32(mode)); err != nil {
+				unix.Close(f)
+				return errors.Wrap(err, "unable to set permission bits on file")
+			} else if err = unix.Close(f); err != nil {
+				return errors.Wrap(err, "unable to close file")
+			}
+		} else {
+			if err := unix.Fchmodat(d.descriptor, name, uint32(mode), unix.AT_SYMLINK_NOFOLLOW); err != nil {
+				return errors.Wrap(err, "unable to set permission bits")
+			}
 		}
 	}
 
@@ -166,10 +198,13 @@ func (d *Directory) SetPermissions(name string, ownership *OwnershipSpecificatio
 
 // open is the underlying open implementation shared by OpenDirectory and
 // OpenFile.
-func (d *Directory) open(name string, wantDirectory bool) (*os.File, int, error) {
+func (d *Directory) open(name string, wantDirectory bool) (int, *os.File, error) {
 	// Verify that the name is valid.
-	if err := ensureValidName(name); err != nil {
-		return nil, 0, err
+	if wantDirectory && name == "." {
+		// As a special case, we allow directories to be re-opened on POSIX
+		// systems. This is safe since it doesn't allow traversal.
+	} else if err := ensureValidName(name); err != nil {
+		return -1, nil, err
 	}
 
 	// Open the file for reading while avoiding symbolic link traversal. There
@@ -188,13 +223,13 @@ func (d *Directory) open(name string, wantDirectory bool) (*os.File, int, error)
 	// HACK: We use the same looping construct as Go to avoid golang/go#11180.
 	var descriptor int
 	for {
-		if d, err := openat(int(d.descriptor), name, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0); err == nil {
+		if d, err := unix.Openat(d.descriptor, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0); err == nil {
 			descriptor = d
 			break
 		} else if runtime.GOOS == "darwin" && err == unix.EINTR {
 			continue
 		} else {
-			return nil, 0, err
+			return -1, nil, err
 		}
 	}
 
@@ -213,10 +248,10 @@ func (d *Directory) open(name string, wantDirectory bool) (*os.File, int, error)
 	var metadata unix.Stat_t
 	if err := unix.Fstat(descriptor, &metadata); err != nil {
 		unix.Close(descriptor)
-		return nil, 0, errors.Wrap(err, "unable to query file metadata")
+		return -1, nil, errors.Wrap(err, "unable to query file metadata")
 	} else if Mode(metadata.Mode)&ModeTypeMask != expectedType {
 		unix.Close(descriptor)
-		return nil, 0, errors.New("path is not of the expected type")
+		return -1, nil, errors.New("path is not of the expected type")
 	}
 
 	// Wrap the descriptor up in a file object. We use the base name for the
@@ -226,21 +261,24 @@ func (d *Directory) open(name string, wantDirectory bool) (*os.File, int, error)
 	file := os.NewFile(uintptr(descriptor), name)
 
 	// Success.
-	return file, descriptor, nil
+	return descriptor, file, nil
 }
 
-// OpenDirectory opens the directory within the directory specified by name.
+// OpenDirectory opens the directory within the directory specified by name. On
+// POSIX systems, the directory itself can be re-opened (with a different
+// underlying file handle pointing to the same directory) by passing "." to this
+// function.
 func (d *Directory) OpenDirectory(name string) (*Directory, error) {
 	// Call the underlying open method.
-	file, descriptor, err := d.open(name, true)
+	descriptor, file, err := d.open(name, true)
 	if err != nil {
 		return nil, err
 	}
 
 	// Success.
 	return &Directory{
-		file:       file,
 		descriptor: descriptor,
+		file:       file,
 	}, nil
 }
 
@@ -291,7 +329,7 @@ func (d *Directory) ReadContentMetadata(name string) (*Metadata, error) {
 
 	// Query metadata.
 	var metadata unix.Stat_t
-	if err := fstatat(d.descriptor, name, &metadata, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+	if err := unix.Fstatat(d.descriptor, name, &metadata, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return nil, err
 	}
 
@@ -311,12 +349,10 @@ func (d *Directory) ReadContentMetadata(name string) (*Metadata, error) {
 
 // ReadContents queries the directory contents and their associated metadata.
 // While the results of this function can be computed as a combination of
-// ReadContentNames and ReadContentMetadata (and this is indeed the mechanism by
-// which this function is implemented on POSIX systems), it may be significantly
-// faster than a naïve combination implementation on some platforms
-// (specifically Windows, where it relies on FindFirstFile/FindNextFile
-// infrastructure). This function doesn't not return metadata for "." or ".."
-// entries.
+// ReadContentNames and ReadContentMetadata, this function may be significantly
+// faster than a naïve combination of the two (e.g. due to the usage of
+// FindFirstFile/FindNextFile infrastructure on Windows). This function doesn't
+// return metadata for "." or ".." entries.
 func (d *Directory) ReadContents() ([]*Metadata, error) {
 	// Read content names.
 	names, err := d.ReadContentNames()
@@ -350,7 +386,7 @@ func (d *Directory) ReadContents() ([]*Metadata, error) {
 
 // OpenFile opens the file within the directory specified by name.
 func (d *Directory) OpenFile(name string) (ReadableFile, error) {
-	file, _, err := d.open(name, false)
+	_, file, err := d.open(name, false)
 	return file, err
 }
 
@@ -387,7 +423,7 @@ func (d *Directory) ReadSymbolicLink(name string) (string, error) {
 		// indicate inadequate buffer space. Watch for this error and continue
 		// growing the buffer in that case. See the os.Readlink implementation
 		// (for Go 1.12+) for an example of how this is handled.
-		count, err := readlinkat(d.descriptor, name, buffer)
+		count, err := fssyscall.Readlinkat(d.descriptor, name, buffer)
 		if err != nil {
 			return "", &os.PathError{
 				Op:   "readlinkat",
@@ -418,7 +454,7 @@ func (d *Directory) RemoveDirectory(name string) error {
 	}
 
 	// Remove the directory.
-	return unlinkat(d.descriptor, name, _AT_REMOVEDIR)
+	return unix.Unlinkat(d.descriptor, name, fssyscall.AT_REMOVEDIR)
 }
 
 // RemoveFile deletes a file with the specified name inside the directory.
@@ -429,7 +465,7 @@ func (d *Directory) RemoveFile(name string) error {
 	}
 
 	// Remove the file.
-	return unlinkat(d.descriptor, name, 0)
+	return unix.Unlinkat(d.descriptor, name, 0)
 }
 
 // RemoveSymbolicLink deletes a symbolic link with the specified name inside the
@@ -477,7 +513,7 @@ func Rename(
 	}
 
 	// Perform an atomic rename.
-	return renameat(
+	return unix.Renameat(
 		sourceDescriptor, sourceNameOrPath,
 		targetDescriptor, targetNameOrPath,
 	)

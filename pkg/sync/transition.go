@@ -27,7 +27,9 @@ const (
 type Provider interface {
 	// Provide returns a filesystem path to a file containing the contents for
 	// the path given as the first argument with the digest specified by the
-	// second argument.
+	// second argument. If the provider is unable to locate a file matching the
+	// specified parameters in its internal storage, it should return an error
+	// for which os.IsNotExist evaluates to true.
 	Provide(path string, digest []byte) (string, error)
 }
 
@@ -57,6 +59,9 @@ type transitioner struct {
 	provider Provider
 	// problems are the problems currently being tracked.
 	problems []*Problem
+	// providerMissingFiles indicates that the staged file provider returned an
+	// os.IsNotExist error for at least one file that was expected to be staged.
+	providerMissingFiles bool
 }
 
 // recordProblem records a new problem.
@@ -112,7 +117,6 @@ func (t *transitioner) nameExistsInDirectoryWithProperCase(
 // filesystem.
 func (t *transitioner) walkToParentAndComputeLeafName(
 	path string,
-	createRootParent bool,
 	validateLeafCasing bool,
 ) (*filesystem.Directory, string, error) {
 	// Handle the special case of a root path. In this case we open the parent
@@ -136,23 +140,6 @@ func (t *transitioner) walkToParentAndComputeLeafName(
 		if rootName == "" {
 			return nil, "", errors.New("root path is a filesystem root")
 		}
-
-		// If creation of the root parent has been requested, then make sure it
-		// exists. This is a no-op if the parent does exist.
-		//
-		// RACE: The os.MkdirAll function is technically racy since it's purely
-		// path-based, but it's fine for our out-of-synchronization-root
-		// behavior.
-		if createRootParent {
-			if err := os.MkdirAll(rootParentPath, os.FileMode(t.defaultDirectoryPermissionMode)); err != nil {
-				return nil, "", errors.Wrap(err, "unable to create parent component of root path")
-			}
-		}
-
-		// RACE: There is also technically a race condition here because we're
-		// doing a Mkdir operation (potentially) and then opening the parent,
-		// but it's inconsequential since we'll ensure that it exists once open
-		// and that it's a directory.
 
 		// Open the parent. We do allow the parent path to be a symbolic link
 		// since we allow symbolic link resolution for parent components of the
@@ -296,7 +283,7 @@ func (t *transitioner) ensureExpectedSymbolicLink(parent *filesystem.Directory, 
 	// If we're in portable symlink mode, then we need to normalize the target
 	// coming from disk, because some systems (e.g. Windows) won't round-trip
 	// the target correctly.
-	if t.symlinkMode == SymlinkMode_SymlinkPortable {
+	if t.symlinkMode == SymlinkMode_SymlinkModePortable {
 		target, err = normalizeSymlinkAndEnsurePortable(path, target)
 		if err != nil {
 			return errors.Wrap(err, "unable to normalize target in portable mode")
@@ -353,7 +340,7 @@ func (t *transitioner) removeFile(parent *filesystem.Directory, name, path strin
 func (t *transitioner) removeSymbolicLink(parent *filesystem.Directory, name, path string, expected *Entry) error {
 	// Ensure that this request is valid for the current symbolic link handling
 	// mode.
-	if t.symlinkMode == SymlinkMode_SymlinkIgnore {
+	if t.symlinkMode == SymlinkMode_SymlinkModeIgnore {
 		return errors.New("symbolic link removal requested with symbolic links ignored")
 	}
 
@@ -491,7 +478,7 @@ func (t *transitioner) remove(path string, entry *Entry) *Entry {
 
 	// Walk down to the parent of the target and compute the target's leaf name.
 	// If we are successful, defer closure of the parent.
-	parent, name, err := t.walkToParentAndComputeLeafName(path, false, true)
+	parent, name, err := t.walkToParentAndComputeLeafName(path, true)
 	if err != nil {
 		t.recordProblem(path, errors.Wrap(err, "unable to walk to transition root"))
 		return entry
@@ -545,9 +532,14 @@ func (t *transitioner) findAndMoveStagedFileIntoPlace(
 		mode = markExecutableForReaders(mode)
 	}
 
-	// Compute the path to the staged file.
+	// Compute the path to the staged file. If the provider indicates that no
+	// staged file exists with the specified parameters, then update our missing
+	// file tracking.
 	stagedPath, err := t.provider.Provide(path, target.Digest)
 	if err != nil {
+		if os.IsNotExist(err) {
+			t.providerMissingFiles = true
+		}
 		return errors.Wrap(err, "unable to locate staged file")
 	}
 
@@ -628,7 +620,7 @@ func (t *transitioner) findAndMoveStagedFileIntoPlace(
 func (t *transitioner) swapFile(path string, oldEntry, newEntry *Entry) error {
 	// Walk down to the parent of the target and compute the target's leaf name.
 	// If we are successful, defer closure of the parent.
-	parent, name, err := t.walkToParentAndComputeLeafName(path, false, true)
+	parent, name, err := t.walkToParentAndComputeLeafName(path, true)
 	if err != nil {
 		return errors.Wrap(err, "unable to walk to transition root")
 	}
@@ -696,9 +688,9 @@ func (t *transitioner) createFile(parent *filesystem.Directory, name, path strin
 func (t *transitioner) createSymbolicLink(parent *filesystem.Directory, name, path string, target *Entry) error {
 	// Verify that the symbolic link agrees with our symbolic link handling
 	// mode.
-	if t.symlinkMode == SymlinkMode_SymlinkIgnore {
+	if t.symlinkMode == SymlinkMode_SymlinkModeIgnore {
 		return errors.New("symbolic link creation requested with symbolic links ignored")
-	} else if t.symlinkMode == SymlinkMode_SymlinkPortable {
+	} else if t.symlinkMode == SymlinkMode_SymlinkModePortable {
 		if normalized, err := normalizeSymlinkAndEnsurePortable(path, target.Target); err != nil || normalized != target.Target {
 			return errors.New("symbolic link was not in normalized form or was not portable")
 		}
@@ -816,7 +808,7 @@ func (t *transitioner) create(path string, target *Entry) *Entry {
 
 	// Walk down to the parent of the target and compute the target's leaf name.
 	// If we are successful, defer closure of the parent.
-	parent, name, err := t.walkToParentAndComputeLeafName(path, false, false)
+	parent, name, err := t.walkToParentAndComputeLeafName(path, false)
 	if err != nil {
 		t.recordProblem(path, errors.Wrap(err, "unable to walk to transition root parent"))
 		return nil
@@ -849,7 +841,9 @@ func (t *transitioner) create(path string, target *Entry) *Entry {
 // Transition provides recursive filesystem transitioning facilities for
 // synchronization roots, allowing the application of changes after
 // reconciliation. The path to the provided synchronization root must be
-// absolute and normalized (using filepath.Clean).
+// absolute and normalized (using filepath.Clean). The function returns a slice
+// of the resulting entries, problems, and a boolean indicating whether or not
+// the provider was missing files.
 func Transition(
 	root string,
 	transitions []*Change,
@@ -860,7 +854,7 @@ func Transition(
 	defaultOwnership *filesystem.OwnershipSpecification,
 	recomposeUnicode bool,
 	provider Provider,
-) ([]*Entry, []*Problem) {
+) ([]*Entry, []*Problem, bool) {
 	// Create the transitioner.
 	transitioner := &transitioner{
 		root:                           root,
@@ -910,5 +904,5 @@ func Transition(
 	}
 
 	// Done.
-	return results, transitioner.problems
+	return results, transitioner.problems, transitioner.providerMissingFiles
 }

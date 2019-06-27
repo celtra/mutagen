@@ -13,7 +13,7 @@ import (
 
 	aclapi "github.com/hectane/go-acl/api"
 
-	osvendor "github.com/havoc-io/mutagen/pkg/filesystem/os"
+	osvendor "github.com/havoc-io/mutagen/pkg/filesystem/internal/third_party/os"
 )
 
 // ensureValidName verifies that the provided name does not reference the
@@ -70,6 +70,15 @@ func (d *Directory) Close() error {
 
 	// Success.
 	return nil
+}
+
+// Handle provides access to the raw Windows handle underlying the directory. It
+// should not be used or retained beyond the point in time where the Close
+// method is called, and it should not be closed externally. Its usefulness is
+// to code which relies on handle-based operations. This method does not exist
+// on POSIX systems, so it should only be used in Windows-specific code.
+func (d *Directory) Handle() windows.Handle {
+	return d.handle
 }
 
 // CreateDirectory creates a new directory with the specified name inside the
@@ -344,12 +353,10 @@ func (d *Directory) ReadContentMetadata(name string) (*Metadata, error) {
 
 // ReadContents queries the directory contents and their associated metadata.
 // While the results of this function can be computed as a combination of
-// ReadContentNames and ReadContentMetadata (and this is indeed the mechanism by
-// which this function is implemented on POSIX systems), it may be significantly
-// faster than a naïve combination implementation on some platforms
-// (specifically Windows, where it relies on FindFirstFile/FindNextFile
-// infrastructure). This function doesn't not return metadata for "." or ".."
-// entries.
+// ReadContentNames and ReadContentMetadata, this function may be significantly
+// faster than a naïve combination of the two (e.g. due to the usage of
+// FindFirstFile/FindNextFile infrastructure on Windows). This function doesn't
+// return metadata for "." or ".." entries.
 func (d *Directory) ReadContents() ([]*Metadata, error) {
 	// Read directory content. On Windows, we use the os.File implementation to
 	// read names and (an acceptable amount of metadata) in one fell swoop,

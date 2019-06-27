@@ -12,13 +12,33 @@ const (
 	// inside the user's home directory.
 	mutagenConfigurationName = ".mutagen.toml"
 
-	// MutagenDirectoryName is the name of the Mutagen control directory inside
-	// the user's home directory.
+	// MutagenDirectoryName is the name of the Mutagen data directory inside the
+	// user's home directory.
 	MutagenDirectoryName = ".mutagen"
 
-	// mutagenDirectoryPermissions are the permissions for the Mutagen control
-	// directory and its subdirectories.
-	mutagenDirectoryPermissions os.FileMode = 0700
+	// MutagenDaemonDirectoryName is the name of the daemon subdirectory within
+	// the Mutagen data directory.
+	MutagenDaemonDirectoryName = "daemon"
+
+	// MutagenAgentsDirectoryName is the subdirectory of the Mutagen directory
+	// in which agents should be stored.
+	MutagenAgentsDirectoryName = "agents"
+
+	// MutagenSessionsDirectoryName is the name of the sessions subdirectory
+	// within the Mutagen data directory.
+	MutagenSessionsDirectoryName = "sessions"
+
+	// MutagenCachesDirectoryName is the name of the caches subdirectory within
+	// the Mutagen data directory.
+	MutagenCachesDirectoryName = "caches"
+
+	// MutagenArchivesDirectoryName is the name of the archives subdirectory
+	// within the Mutagen data directory.
+	MutagenArchivesDirectoryName = "archives"
+
+	// MutagenStagingDirectoryName is the name of the staging subdirectory
+	// within the Mutagen data directory.
+	MutagenStagingDirectoryName = "staging"
 )
 
 // HomeDirectory is the cached path to the current user's home directory.
@@ -30,7 +50,13 @@ var MutagenConfigurationPath string
 // init performs global initialization.
 func init() {
 	// Grab the current user's home directory.
-	HomeDirectory = mustComputeHomeDirectory()
+	if h, err := os.UserHomeDir(); err != nil {
+		panic(errors.Wrap(err, "unable to query user's home directory"))
+	} else if h == "" {
+		panic(errors.New("home directory path empty"))
+	} else {
+		HomeDirectory = h
+	}
 
 	// Compute the path to the configuration file.
 	MutagenConfigurationPath = filepath.Join(HomeDirectory, mutagenConfigurationName)
@@ -53,9 +79,9 @@ func Mutagen(create bool, subpath ...string) (string, error) {
 	// suppose the user may have changed them for whatever reason (though I
 	// can't imagine any).
 	if create {
-		if err := os.MkdirAll(result, mutagenDirectoryPermissions); err != nil {
+		if err := os.MkdirAll(result, 0700); err != nil {
 			return "", errors.Wrap(err, "unable to create subpath")
-		} else if err := markHidden(root); err != nil {
+		} else if err := MarkHidden(root); err != nil {
 			return "", errors.Wrap(err, "unable to hide Mutagen directory")
 		}
 	}

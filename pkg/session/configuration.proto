@@ -4,10 +4,13 @@ package session;
 
 option go_package = "github.com/havoc-io/mutagen/pkg/session";
 
-import "filesystem/watch.proto";
-import "sync/ignore.proto";
+import "filesystem/behavior/probe_mode.proto";
+import "session/scan_mode.proto";
+import "session/stage_mode.proto";
+import "session/watch_mode.proto";
+import "sync/ignore_vcs_mode.proto";
 import "sync/mode.proto";
-import "sync/symlink.proto";
+import "sync/symlink_mode.proto";
 
 // Configuration encodes session configuration parameters. It is used for create
 // commands to specify configuration options, for loading global configuration
@@ -30,7 +33,16 @@ message Configuration {
     // endpoints will stage. A zero value indicates no limit.
     uint64 maximumStagingFileSize = 13;
 
-    // Fields 14-20 are reserved for future synchronization configuration
+    // ProbeMode specifies the filesystem probing mode.
+    behavior.ProbeMode probeMode = 14;
+
+    // ScanMode specifies the synchronization root scanning mode.
+    ScanMode scanMode = 15;
+
+    // StageMode specifies the file staging mode.
+    StageMode stageMode = 16;
+
+    // Fields 17-20 are reserved for future synchronization configuration
     // parameters.
 
 
@@ -49,7 +61,7 @@ message Configuration {
     // Watch configuration parameters (fields 21-30).
 
     // WatchMode specifies the filesystem watching mode.
-    filesystem.WatchMode watchMode = 21;
+    WatchMode watchMode = 21;
 
     // WatchPollingInterval specifies the interval (in seconds) for poll-based
     // file monitoring. A value of 0 specifies that the default interval should

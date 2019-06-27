@@ -4,11 +4,10 @@ go 1.12
 
 require (
 	github.com/BurntSushi/toml v0.3.1
-	github.com/Microsoft/go-winio v0.4.12
+	github.com/Microsoft/go-winio v0.4.13-0.20190422210507-3fe4fa31662f
 	github.com/bmatcuk/doublestar v1.1.1
 	github.com/dustin/go-humanize v1.0.0
 	github.com/fatih/color v1.7.0
-	github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b // indirect
 	github.com/golang/groupcache v0.0.0-20190129154638-5b532d6fd5ef
 	github.com/golang/protobuf v1.3.1
 	github.com/google/uuid v1.1.1
@@ -23,8 +22,10 @@ require (
 	github.com/spf13/cobra v0.0.3
 	github.com/spf13/pflag v1.0.3
 	golang.org/x/crypto v0.0.0-20190418161225-b43e412143f9 // indirect
-	golang.org/x/net v0.0.0-20190415214537-1da14a5a36f2
+	golang.org/x/net v0.0.0-20190415214537-1da14a5a36f2 // indirect
 	golang.org/x/sys v0.0.0-20190418153312-f0ce4c0180be
 	golang.org/x/text v0.3.0
-	google.golang.org/grpc v1.20.0
+	google.golang.org/grpc v1.20.1
+	k8s.io/apimachinery v0.0.0-20190404173353-6a84e37a896d
+	k8s.io/klog v0.3.0 // indirect
 )

@@ -5,6 +5,8 @@ import (
 
 	"github.com/havoc-io/mutagen/pkg/encoding"
 	"github.com/havoc-io/mutagen/pkg/filesystem"
+	"github.com/havoc-io/mutagen/pkg/filesystem/behavior"
+	"github.com/havoc-io/mutagen/pkg/session"
 	"github.com/havoc-io/mutagen/pkg/sync"
 )
 
@@ -20,6 +22,12 @@ type Configuration struct {
 		// MaximumStagingFileSize is the maximum (individual) file size that
 		// endpoints will stage. It can be specified in human-friendly units.
 		MaximumStagingFileSize ByteSize `toml:"maxStagingFileSize"`
+		// ProbeMode specifies the filesystem probing mode.
+		ProbeMode behavior.ProbeMode `toml:"probeMode"`
+		// ScanMode specifies the filesystem scanning mode.
+		ScanMode session.ScanMode `toml:"scanMode"`
+		// StageMode specifies the filesystem staging mode.
+		StageMode session.StageMode `toml:"stageMode"`
 	} `toml:"sync"`
 
 	// Ignore contains parameters related to synchronization ignore
@@ -41,7 +49,7 @@ type Configuration struct {
 	// Watch contains parameters related to filesystem monitoring.
 	Watch struct {
 		// Mode specifies the file watching mode.
-		Mode filesystem.WatchMode `toml:"mode"`
+		Mode session.WatchMode `toml:"mode"`
 
 		// PollingInterval specifies the interval (in seconds) for poll-based
 		// file monitoring. A value of 0 specifies that Mutagen's internal
@@ -71,20 +79,15 @@ type Configuration struct {
 	} `toml:"permissions"`
 }
 
-// loadFromPath is the internal loading function. We keep it separate from Load
-// so that we can get full test coverage using temporary files.
-func loadFromPath(path string) (*Configuration, error) {
-	// Create a configuration that we can decode into. We set any default values
-	// here because nothing will be modified in this structure if the
-	// configuration file doesn't exist.
+// Load loads a TOML-based Mutagen configuration file from the specified path.
+func Load(path string) (*Configuration, error) {
+	// Create a configuration object into which we can decode.
 	result := &Configuration{}
 
 	// Attempt to load the configuration from disk. If loading fails due to the
 	// path not existing, we return the blank configuration. We don't need to
 	// allocate a fresh one in that case since the loader won't have touched it
 	// if the file didn't exist.
-	// TODO: Should we implement a caching mechanism where we run a stat call
-	// and watch for filesystem modification?
 	if err := encoding.LoadAndUnmarshalTOML(path, result); err != nil {
 		if !os.IsNotExist(err) {
 			return nil, err
@@ -93,12 +96,4 @@ func loadFromPath(path string) (*Configuration, error) {
 
 	// Return the configuration.
 	return result, nil
-}
-
-// Load loads the Mutagen configuration file from disk and populates a
-// Configuration structure. If the Mutagen configuration file does not exist,
-// this method will return a structure with the default configuration values.
-// The returned structure is not re-used, so its members can be freely mutated.
-func Load() (*Configuration, error) {
-	return loadFromPath(filesystem.MutagenConfigurationPath)
 }

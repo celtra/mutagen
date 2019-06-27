@@ -6,33 +6,8 @@ import (
 	"testing"
 )
 
-const (
-	testConfigurationGibberish = "[a+1a4"
-	testConfigurationValid     = `[sync]
-mode = "two-way-resolved"
-maxEntryCount = 500
-maxStagingFileSize = "1000 GB"
-
-[symlink]
-mode = "portable"
-
-[watch]
-mode = "force-poll"
-pollingInterval = 5
-
-[ignore]
-default = ["ignore/this/**", "!ignore/this/that"]
-
-[permissions]
-defaultFileMode = 644
-defaultDirectoryMode = 0755
-defaultOwner = "george"
-defaultGroup = "presidents"
-`
-)
-
 func TestLoadNonExistent(t *testing.T) {
-	if c, err := loadFromPath("/this/does/not/exist"); err != nil {
+	if c, err := Load("/this/does/not/exist"); err != nil {
 		t.Error("load from non-existent path failed:", err)
 	} else if c == nil {
 		t.Error("load from non-existent path returned nil configuration")
@@ -50,7 +25,7 @@ func TestLoadEmpty(t *testing.T) {
 	defer os.Remove(file.Name())
 
 	// Attempt to load.
-	if c, err := loadFromPath(file.Name()); err != nil {
+	if c, err := Load(file.Name()); err != nil {
 		t.Error("load from empty file failed:", err)
 	} else if c == nil {
 		t.Error("load from empty file returned nil configuration")
@@ -70,7 +45,7 @@ func TestLoadGibberish(t *testing.T) {
 	defer os.Remove(file.Name())
 
 	// Attempt to load.
-	if _, err := loadFromPath(file.Name()); err == nil {
+	if _, err := Load(file.Name()); err == nil {
 		t.Error("load did not fail on gibberish configuration")
 	}
 }
@@ -84,7 +59,7 @@ func TestLoadDirectory(t *testing.T) {
 	defer os.RemoveAll(directory)
 
 	// Attempt to load.
-	if _, err := loadFromPath(directory); err == nil {
+	if _, err := Load(directory); err == nil {
 		t.Error("load did not fail on directory path")
 	}
 }
@@ -102,18 +77,9 @@ func TestLoadValidConfiguration(t *testing.T) {
 	defer os.Remove(file.Name())
 
 	// Attempt to load.
-	if c, err := loadFromPath(file.Name()); err != nil {
+	if c, err := Load(file.Name()); err != nil {
 		t.Error("load from valid configuration failed:", err)
 	} else if c == nil {
 		t.Error("load from valid configuration returned nil configuration")
-	}
-}
-
-// NOTE: This test depends on not having an invalid ~/.mutagen.toml file.
-func TestLoad(t *testing.T) {
-	if c, err := Load(); err != nil {
-		t.Error("load failed:", err)
-	} else if c == nil {
-		t.Error("load returned nil configuration")
 	}
 }

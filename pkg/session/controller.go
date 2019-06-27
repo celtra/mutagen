@@ -14,7 +14,6 @@ import (
 	"github.com/golang/protobuf/ptypes"
 
 	"github.com/havoc-io/mutagen/pkg/encoding"
-	"github.com/havoc-io/mutagen/pkg/filesystem"
 	"github.com/havoc-io/mutagen/pkg/mutagen"
 	"github.com/havoc-io/mutagen/pkg/prompt"
 	"github.com/havoc-io/mutagen/pkg/rsync"
@@ -86,23 +85,11 @@ func newSession(
 	tracker *state.Tracker,
 	alpha, beta *url.URL,
 	configuration, configurationAlpha, configurationBeta *Configuration,
+	labels map[string]string,
 	prompter string,
 ) (*controller, error) {
 	// Update status.
 	prompt.Message(prompter, "Creating session...")
-
-	// Create a snapshot of the global configuration.
-	globalConfiguration, err := snapshotGlobalConfiguration()
-	if err != nil {
-		return nil, errors.Wrap(err, "unable to snapshot global configuration")
-	}
-
-	// Create an effective merged configuration.
-	mergedConfiguration := MergeConfigurations(globalConfiguration, configuration)
-
-	// Compute endpoint-specific merged configurations.
-	mergedAlphaConfiguration := MergeConfigurations(mergedConfiguration, configurationAlpha)
-	mergedBetaConfiguration := MergeConfigurations(mergedConfiguration, configurationBeta)
 
 	// Create a unique session identifier.
 	randomUUID, err := uuid.NewRandom()
@@ -120,6 +107,10 @@ func newSession(
 	if err != nil {
 		return nil, errors.Wrap(err, "unable to convert creation time format")
 	}
+
+	// Compute merged endpoint configurations.
+	mergedAlphaConfiguration := MergeConfigurations(configuration, configurationAlpha)
+	mergedBetaConfiguration := MergeConfigurations(configuration, configurationBeta)
 
 	// Attempt to connect. Session creation is only allowed after if successful.
 	alphaEndpoint, err := connect(alpha, prompter, identifier, version, mergedAlphaConfiguration, true)
@@ -142,9 +133,10 @@ func newSession(
 		CreatingVersionPatch: mutagen.VersionPatch,
 		Alpha:                alpha,
 		Beta:                 beta,
-		Configuration:        mergedConfiguration,
+		Configuration:        configuration,
 		ConfigurationAlpha:   configurationAlpha,
 		ConfigurationBeta:    configurationBeta,
+		Labels:               labels,
 	}
 	archive := &sync.Archive{}
 
@@ -714,18 +706,19 @@ func (c *controller) synchronize(context contextpkg.Context, alpha, beta Endpoin
 	if βWatchMode.IsDefault() {
 		βWatchMode = c.session.Version.DefaultWatchMode()
 	}
-	αDisablePolling := (αWatchMode == filesystem.WatchMode_WatchModeNoWatch)
-	βDisablePolling := (βWatchMode == filesystem.WatchMode_WatchModeNoWatch)
+	αDisablePolling := (αWatchMode == WatchMode_WatchModeNoWatch)
+	βDisablePolling := (βWatchMode == WatchMode_WatchModeNoWatch)
 
-	// Track whether or not we should skip over polling (and go straight to a
-	// synchronization cycle). This variable is normally used to continue a
-	// synchronization cycle after a scan failure without having to wait for
-	// polling, but we also use it when first starting a synchronization loop to
-	// force a check for changes that may have occurred while the
+	// Create a switch that will allow us to skip polling and force a
+	// synchronization cycle. On startup, we enable this switch and skip polling
+	// to immediately force a check for changes that may have occurred while the
 	// synchronization loop wasn't running. The only time we don't force this
 	// check on startup is when both endpoints have polling disabled, which is
 	// an indication that the session should operate in a fully manual mode.
 	skipPolling := (!αDisablePolling || !βDisablePolling)
+
+	// Create variables to track our reasons for skipping polling.
+	var skippingPollingDueToScanError, skippingPollingDueToMissingFiles bool
 
 	// Loop until there is a synchronization error.
 	for {
@@ -806,10 +799,13 @@ func (c *controller) synchronize(context contextpkg.Context, alpha, beta Endpoin
 			skipPolling = false
 		}
 
-		// Scan both endpoints in parallel and check for errors.
+		// Scan both endpoints in parallel and check for errors. If a flush
+		// request is present, then force both endpoints to perform a full
+		// (warm) re-scan rather than using acceleration.
 		c.stateLock.Lock()
 		c.state.Status = Status_Scanning
 		c.stateLock.Unlock()
+		forceFullScan := flushRequest != nil
 		var αSnapshot, βSnapshot *sync.Entry
 		var αPreservesExecutability, βPreservesExecutability bool
 		var αScanErr, βScanErr error
@@ -817,11 +813,17 @@ func (c *controller) synchronize(context contextpkg.Context, alpha, beta Endpoin
 		scanDone := &syncpkg.WaitGroup{}
 		scanDone.Add(2)
 		go func() {
-			αSnapshot, αPreservesExecutability, αScanErr, αTryAgain = alpha.Scan(ancestor)
+			αSnapshot, αPreservesExecutability, αScanErr, αTryAgain = alpha.Scan(
+				ancestor,
+				forceFullScan,
+			)
 			scanDone.Done()
 		}()
 		go func() {
-			βSnapshot, βPreservesExecutability, βScanErr, βTryAgain = beta.Scan(ancestor)
+			βSnapshot, βPreservesExecutability, βScanErr, βTryAgain = beta.Scan(
+				ancestor,
+				forceFullScan,
+			)
 			scanDone.Done()
 		}()
 		scanDone.Wait()
@@ -846,26 +848,39 @@ func (c *controller) synchronize(context contextpkg.Context, alpha, beta Endpoin
 			}
 		}
 
-		// Watch for retry requests.
+		// Watch for retry recommendations from scan operations. These occur
+		// when a scan fails and concurrent modifications are suspected as the
+		// culprit. In these cases, we force another synchronization cycle. Note
+		// that, because we skip polling, our flush request, if any, will still
+		// be valid, and we'll be able to respond to it once a successful
+		// synchronization cycle completes.
+		//
 		// TODO: Should we eventually abort synchronization after a certain
 		// number of consecutive scan retries?
 		if αTryAgain || βTryAgain {
-			// Update status to waiting for rescan.
-			c.stateLock.Lock()
-			c.state.Status = Status_WaitingForRescan
-			c.stateLock.Unlock()
+			// If we're already in a synchronization cycle that was forced due
+			// to a previous scan error, and we've now received another retry
+			// recommendation, then wait before attempting a rescan.
+			if skippingPollingDueToScanError {
+				// Update status to waiting for rescan.
+				c.stateLock.Lock()
+				c.state.Status = Status_WaitingForRescan
+				c.stateLock.Unlock()
 
-			// Wait before trying to rescan, but watch for cancellation.
-			select {
-			case <-time.After(rescanWaitDuration):
-			case <-context.Done():
-				return errors.New("cancelled during rescan wait")
+				// Wait before trying to rescan, but watch for cancellation.
+				select {
+				case <-time.After(rescanWaitDuration):
+				case <-context.Done():
+					return errors.New("cancelled during rescan wait")
+				}
 			}
 
 			// Retry.
 			skipPolling = true
+			skippingPollingDueToScanError = true
 			continue
 		}
+		skippingPollingDueToScanError = false
 
 		// Clear the last error (if any) after a successful scan. Since scan
 		// errors are the only non-terminal errors, and since we know that we've
@@ -1038,6 +1053,7 @@ func (c *controller) synchronize(context contextpkg.Context, alpha, beta Endpoin
 		c.stateLock.Unlock()
 		var αResults, βResults []*sync.Entry
 		var αProblems, βProblems []*sync.Problem
+		var αMissingFiles, βMissingFiles bool
 		var αTransitionErr, βTransitionErr error
 		var αChanges, βChanges []*sync.Change
 		transitionDone := &syncpkg.WaitGroup{}
@@ -1049,7 +1065,7 @@ func (c *controller) synchronize(context contextpkg.Context, alpha, beta Endpoin
 		}
 		if len(αTransitions) > 0 {
 			go func() {
-				αResults, αProblems, αTransitionErr = alpha.Transition(αTransitions)
+				αResults, αProblems, αMissingFiles, αTransitionErr = alpha.Transition(αTransitions)
 				if αTransitionErr == nil {
 					for t, transition := range αTransitions {
 						αChanges = append(αChanges, &sync.Change{Path: transition.Path, New: αResults[t]})
@@ -1060,7 +1076,7 @@ func (c *controller) synchronize(context contextpkg.Context, alpha, beta Endpoin
 		}
 		if len(βTransitions) > 0 {
 			go func() {
-				βResults, βProblems, βTransitionErr = beta.Transition(βTransitions)
+				βResults, βProblems, βMissingFiles, βTransitionErr = beta.Transition(βTransitions)
 				if βTransitionErr == nil {
 					for t, transition := range βTransitions {
 						βChanges = append(βChanges, &sync.Change{Path: transition.Path, New: βResults[t]})
@@ -1111,6 +1127,19 @@ func (c *controller) synchronize(context contextpkg.Context, alpha, beta Endpoin
 			return errors.Wrap(αTransitionErr, "unable to apply changes to alpha")
 		} else if βTransitionErr != nil {
 			return errors.Wrap(βTransitionErr, "unable to apply changes to beta")
+		}
+
+		// If there were files missing from either endpoint's stager during the
+		// transition operations, then there were likely concurrent
+		// modifications during staging. If we see this, then skip polling and
+		// attempt to run another synchronization cycle immediately, but only if
+		// we're not already in a synchronization cycle that was forced due to
+		// previously missing files.
+		if (αMissingFiles || βMissingFiles) && !skippingPollingDueToMissingFiles {
+			skipPolling = true
+			skippingPollingDueToMissingFiles = true
+		} else {
+			skippingPollingDueToMissingFiles = false
 		}
 
 		// Increment the synchronization cycle count.

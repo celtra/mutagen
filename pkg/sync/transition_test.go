@@ -13,6 +13,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/havoc-io/mutagen/pkg/filesystem"
+	"github.com/havoc-io/mutagen/pkg/filesystem/behavior"
 )
 
 const (
@@ -162,7 +163,7 @@ func testTransitionCreate(temporaryDirectory string, entry *Entry, contentMap ma
 
 	// Determine whether or not we need to recompose Unicode when transitioning
 	// inside this directory.
-	recomposeUnicode, err := filesystem.DecomposesUnicodeByPath(parent)
+	recomposeUnicode, err := behavior.DecomposesUnicodeByPath(parent, behavior.ProbeMode_ProbeModeProbe)
 	if err != nil {
 		os.RemoveAll(parent)
 		return "", "", errors.Wrap(err, "unable to determine Unicode decomposition behavior")
@@ -191,11 +192,11 @@ func testTransitionCreate(temporaryDirectory string, entry *Entry, contentMap ma
 	// operation, we operate in POSIX raw symbolic link handling, because we
 	// want to be able to create symbolic links for testing that would be
 	// invalid under portable mode.
-	if entries, problems := Transition(
+	if entries, problems, providerMissingFiles := Transition(
 		root,
 		transitions,
 		nil,
-		SymlinkMode_SymlinkPOSIXRaw,
+		SymlinkMode_SymlinkModePOSIXRaw,
 		defaultFilePermissionMode,
 		defaultDirectoryPermissionMode,
 		nil,
@@ -207,6 +208,9 @@ func testTransitionCreate(temporaryDirectory string, entry *Entry, contentMap ma
 	} else if len(entries) != len(transitions) {
 		os.RemoveAll(parent)
 		return "", "", errors.New("unexpected number of entries returned from creation transition")
+	} else if providerMissingFiles {
+		os.RemoveAll(parent)
+		return "", "", errors.New("provider indicated missing files")
 	} else {
 		for e, entry := range entries {
 			if !entry.Equal(transitions[e].New) {
@@ -236,7 +240,7 @@ func testTransitionRemove(root string, expected *Entry, cache *Cache, symlinkMod
 	// Unicode recomposition behavior.
 	var recomposeUnicode bool
 	if expected != nil && expected.Kind == EntryKind_Directory {
-		if r, err := filesystem.DecomposesUnicodeByPath(root); err != nil {
+		if r, err := behavior.DecomposesUnicodeByPath(root, behavior.ProbeMode_ProbeModeProbe); err != nil {
 			return errors.Wrap(err, "unable to determine Unicode decomposition behavior")
 		} else {
 			recomposeUnicode = r
@@ -244,7 +248,7 @@ func testTransitionRemove(root string, expected *Entry, cache *Cache, symlinkMod
 	}
 
 	// Perform the removal transition.
-	if entries, problems := Transition(
+	if entries, problems, _ := Transition(
 		root,
 		transitions,
 		cache,
@@ -295,7 +299,17 @@ func testTransitionCycle(temporaryDirectory string, entry *Entry, contentMap map
 	}
 
 	// Perform a scan.
-	snapshot, preservesExecutability, _, cache, ignoreCache, err := Scan(root, newTestHasher(), nil, nil, nil, SymlinkMode_SymlinkPortable)
+	snapshot, preservesExecutability, _, cache, _, err := Scan(
+		root,
+		nil,
+		nil,
+		newTestHasher(),
+		nil,
+		nil,
+		nil,
+		behavior.ProbeMode_ProbeModeProbe,
+		SymlinkMode_SymlinkModePortable,
+	)
 	if !preservesExecutability {
 		snapshot = PropagateExecutability(nil, expected, snapshot)
 	}
@@ -303,15 +317,13 @@ func testTransitionCycle(temporaryDirectory string, entry *Entry, contentMap map
 		return errors.Wrap(err, "unable to perform scan")
 	} else if cache == nil {
 		return errors.New("nil cache returned")
-	} else if ignoreCache == nil {
-		return errors.New("nil ignore cache returned")
 	} else if modifier == nil && !snapshot.Equal(expected) {
 		return errors.New("snapshot not equal to expected")
 	}
 
 	// Remove the test content. This will exercise the removal portion of
 	// Transition.
-	if err := testTransitionRemove(root, expected, cache, SymlinkMode_SymlinkPortable, decompose); err != nil {
+	if err := testTransitionRemove(root, expected, cache, SymlinkMode_SymlinkModePortable, decompose); err != nil {
 		return errors.Wrap(err, "unable to remove test content")
 	}
 
@@ -390,13 +402,21 @@ func TestTransitionSwapFile(t *testing.T) {
 	// attempt an additional create transition.
 	modifier := func(root string, expected *Entry) (*Entry, error) {
 		// Perform a scan to grab Unicode recomposition behavior and a cache.
-		_, _, recomposeUnicode, cache, ignoreCache, err := Scan(root, newTestHasher(), nil, nil, nil, SymlinkMode_SymlinkPortable)
+		_, _, recomposeUnicode, cache, _, err := Scan(
+			root,
+			nil,
+			nil,
+			newTestHasher(),
+			nil,
+			nil,
+			nil,
+			behavior.ProbeMode_ProbeModeProbe,
+			SymlinkMode_SymlinkModePortable,
+		)
 		if err != nil {
 			return nil, errors.Wrap(err, "unable to perform scan")
 		} else if cache == nil {
 			return nil, errors.New("nil cache returned")
-		} else if ignoreCache == nil {
-			return nil, errors.New("nil ignore cache returned")
 		}
 
 		// Attempt to switch the content of a file.
@@ -420,11 +440,11 @@ func TestTransitionSwapFile(t *testing.T) {
 
 		// Perform the swap transition, ensure that it succeeds, and update the
 		// expected contents.
-		if entries, problems := Transition(
+		if entries, problems, providerMissingFiles := Transition(
 			root,
 			transitions,
 			cache,
-			SymlinkMode_SymlinkPortable,
+			SymlinkMode_SymlinkModePortable,
 			defaultFilePermissionMode,
 			defaultDirectoryPermissionMode,
 			nil,
@@ -432,6 +452,8 @@ func TestTransitionSwapFile(t *testing.T) {
 			provider,
 		); len(problems) != 0 {
 			return nil, errors.New("file swap transition failed")
+		} else if providerMissingFiles {
+			return nil, errors.New("provider indicated missing files")
 		} else if len(entries) != 1 {
 			return nil, errors.New("unexpected number of entries returned from swap transition")
 		} else if !entries[0].Equal(testFile2Entry) {
@@ -455,13 +477,21 @@ func TestTransitionSwapFileOnlyExecutableChange(t *testing.T) {
 	// attempt an additional create transition.
 	modifier := func(root string, expected *Entry) (*Entry, error) {
 		// Perform a scan to grab Unicode recomposition behavior and a cache.
-		_, _, recomposeUnicode, cache, ignoreCache, err := Scan(root, newTestHasher(), nil, nil, nil, SymlinkMode_SymlinkPortable)
+		_, _, recomposeUnicode, cache, _, err := Scan(
+			root,
+			nil,
+			nil,
+			newTestHasher(),
+			nil,
+			nil,
+			nil,
+			behavior.ProbeMode_ProbeModeProbe,
+			SymlinkMode_SymlinkModePortable,
+		)
 		if err != nil {
 			return nil, errors.Wrap(err, "unable to perform scan")
 		} else if cache == nil {
 			return nil, errors.New("nil cache returned")
-		} else if ignoreCache == nil {
-			return nil, errors.New("nil ignore cache returned")
 		}
 
 		// Create a copy of the current entry and mark it as executable.
@@ -477,11 +507,11 @@ func TestTransitionSwapFileOnlyExecutableChange(t *testing.T) {
 
 		// Perform the swap transition with a nil provider (since it shouldn't
 		// be used), ensure that it succeeds, and update the expected contents.
-		if entries, problems := Transition(
+		if entries, problems, _ := Transition(
 			root,
 			transitions,
 			cache,
-			SymlinkMode_SymlinkPortable,
+			SymlinkMode_SymlinkModePortable,
 			defaultFilePermissionMode,
 			defaultDirectoryPermissionMode,
 			nil,
@@ -554,13 +584,21 @@ func TestTransitionFailCreateInvalidPathCase(t *testing.T) {
 	// attempt an additional create transition.
 	modifier := func(root string, expected *Entry) (*Entry, error) {
 		// Perform a scan to grab Unicode recomposition behavior and a cache.
-		_, _, recomposeUnicode, cache, ignoreCache, err := Scan(root, newTestHasher(), nil, nil, nil, SymlinkMode_SymlinkPortable)
+		_, _, recomposeUnicode, cache, _, err := Scan(
+			root,
+			nil,
+			nil,
+			newTestHasher(),
+			nil,
+			nil,
+			nil,
+			behavior.ProbeMode_ProbeModeProbe,
+			SymlinkMode_SymlinkModePortable,
+		)
 		if err != nil {
 			return nil, errors.Wrap(err, "unable to perform scan")
 		} else if cache == nil {
 			return nil, errors.New("nil cache returned")
-		} else if ignoreCache == nil {
-			return nil, errors.New("nil ignore cache returned")
 		}
 
 		// Change the directory case.
@@ -586,12 +624,13 @@ func TestTransitionFailCreateInvalidPathCase(t *testing.T) {
 		}
 		defer provider.finalize()
 
-		// Perform the create transition and ensure that it fails.
-		if entries, problems := Transition(
+		// Perform the create transition and ensure that it fails (with an error
+		// other than missing files).
+		if entries, problems, providerMissingFiles := Transition(
 			root,
 			transitions,
 			cache,
-			SymlinkMode_SymlinkPortable,
+			SymlinkMode_SymlinkModePortable,
 			defaultFilePermissionMode,
 			defaultDirectoryPermissionMode,
 			nil,
@@ -599,6 +638,8 @@ func TestTransitionFailCreateInvalidPathCase(t *testing.T) {
 			provider,
 		); len(problems) == 0 {
 			return nil, errors.New("transition succeeded unexpectedly")
+		} else if providerMissingFiles {
+			return nil, errors.New("provider indicated missing files")
 		} else if len(entries) != 1 {
 			return nil, errors.New("unexpected number of entries returned from creation transition")
 		} else if entries[0] != nil {
@@ -682,12 +723,13 @@ func TestTransitionFailOnParentPathIsFile(t *testing.T) {
 	}
 	defer provider.finalize()
 
-	// Perform the creation transition and ensure that it encounters a problem.
-	if entries, problems := Transition(
+	// Perform the creation transition and ensure that it encounters a problem
+	// (other than missing files).
+	if entries, problems, providerMissingFiles := Transition(
 		root,
 		transitions,
 		nil,
-		SymlinkMode_SymlinkPortable,
+		SymlinkMode_SymlinkModePortable,
 		defaultFilePermissionMode,
 		defaultDirectoryPermissionMode,
 		nil,
@@ -695,6 +737,8 @@ func TestTransitionFailOnParentPathIsFile(t *testing.T) {
 		provider,
 	); len(problems) != 1 {
 		t.Error("transition succeeded unexpectedly")
+	} else if providerMissingFiles {
+		t.Error("provider indicated missing files")
 	} else if len(entries) != 1 {
 		t.Error("transition returned invalid number of entries")
 	} else if entries[0] != nil {

@@ -13,8 +13,8 @@ import (
 	"github.com/havoc-io/mutagen/pkg/mutagen"
 	"github.com/havoc-io/mutagen/pkg/process"
 	"github.com/havoc-io/mutagen/pkg/prompt"
-	"github.com/havoc-io/mutagen/pkg/remote"
 	"github.com/havoc-io/mutagen/pkg/session"
+	"github.com/havoc-io/mutagen/pkg/session/endpoint/remote"
 )
 
 const (
@@ -57,9 +57,9 @@ func connect(
 	}
 	agentInvocationPath := strings.Join([]string{
 		filesystem.MutagenDirectoryName,
-		agentsDirectoryName,
+		filesystem.MutagenAgentsDirectoryName,
 		mutagen.Version,
-		agentBaseName,
+		BaseName,
 	}, pathSeparator)
 
 	// Compute the command to invoke.

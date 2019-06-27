@@ -15,6 +15,7 @@ import (
 
 	"github.com/havoc-io/mutagen/cmd"
 	"github.com/havoc-io/mutagen/cmd/profile"
+	"github.com/havoc-io/mutagen/pkg/filesystem/behavior"
 	"github.com/havoc-io/mutagen/pkg/sync"
 )
 
@@ -25,6 +26,29 @@ const (
 
 var usage = `scan_bench [-h|--help] [-p|--profile] [-i|--ignore=<pattern>] <path>
 `
+
+// ignoreCachesIntersectionEqual compares two ignore caches, ensuring that keys
+// which are present in both caches have the same value. It's the closest we can
+// get to the sync package's testAcceleratedCacheIsSubset without having access
+// to the members of IgnoreCacheKey.
+func ignoreCachesIntersectionEqual(first, second sync.IgnoreCache) bool {
+	// Check matches from first in second.
+	for key, firstValue := range first {
+		if secondValue, ok := second[key]; ok && secondValue != firstValue {
+			return false
+		}
+	}
+
+	// Check matches from second in first.
+	for key, secondValue := range second {
+		if firstValue, ok := first[key]; ok && firstValue != secondValue {
+			return false
+		}
+	}
+
+	// Success.
+	return true
+}
 
 func main() {
 	// Parse command line arguments.
@@ -51,18 +75,26 @@ func main() {
 	// Print information.
 	fmt.Println("Analyzing", path)
 
-	// Create a snapshot without any cache. If requested, enable CPU and memory
+	// Perform a full (cold) scan. If requested, enable CPU and memory
 	// profiling.
 	var profiler *profile.Profile
 	var err error
 	if enableProfile {
-		if profiler, err = profile.New("scan_cold"); err != nil {
+		if profiler, err = profile.New("scan_full_cold"); err != nil {
 			cmd.Fatal(errors.Wrap(err, "unable to create profiler"))
 		}
 	}
 	start := time.Now()
-	snapshot, preservesExecutability, recomposeUnicode, cache, ignoreCache, err := sync.Scan(
-		path, sha1.New(), nil, ignores, nil, sync.SymlinkMode_SymlinkPortable,
+	snapshot, preservesExecutability, decomposesUnicode, cache, ignoreCache, err := sync.Scan(
+		path,
+		nil,
+		nil,
+		sha1.New(),
+		nil,
+		ignores,
+		nil,
+		behavior.ProbeMode_ProbeModeProbe,
+		sync.SymlinkMode_SymlinkModePortable,
 	)
 	if err != nil {
 		cmd.Fatal(errors.Wrap(err, "unable to create snapshot"))
@@ -78,18 +110,26 @@ func main() {
 	}
 	fmt.Println("Cold scan took", stop.Sub(start))
 	fmt.Println("Root preserves executability:", preservesExecutability)
-	fmt.Println("Root requires Unicode recomposition:", recomposeUnicode)
+	fmt.Println("Root requires Unicode recomposition:", decomposesUnicode)
 
-	// Create a snapshot with a cache. If requested, enable CPU and memory
+	// Perform a full (warm) scan. If requested, enable CPU and memory
 	// profiling.
 	if enableProfile {
-		if profiler, err = profile.New("scan_warm"); err != nil {
+		if profiler, err = profile.New("scan_full_warm"); err != nil {
 			cmd.Fatal(errors.Wrap(err, "unable to create profiler"))
 		}
 	}
 	start = time.Now()
-	snapshot, preservesExecutability, recomposeUnicode, _, _, err = sync.Scan(
-		path, sha1.New(), cache, ignores, ignoreCache, sync.SymlinkMode_SymlinkPortable,
+	newSnapshot, newPreservesExecutability, newDecomposesUnicode, newCache, newIgnoreCache, err := sync.Scan(
+		path,
+		nil,
+		nil,
+		sha1.New(),
+		cache,
+		ignores,
+		ignoreCache,
+		behavior.ProbeMode_ProbeModeProbe,
+		sync.SymlinkMode_SymlinkModePortable,
 	)
 	if err != nil {
 		cmd.Fatal(errors.Wrap(err, "unable to create snapshot"))
@@ -104,8 +144,157 @@ func main() {
 		profiler = nil
 	}
 	fmt.Println("Warm scan took", stop.Sub(start))
-	fmt.Println("Root preserves executability:", preservesExecutability)
-	fmt.Println("Root requires Unicode recomposition:", recomposeUnicode)
+
+	// Compare the warm scan results with the baseline results.
+	if !newSnapshot.Equal(snapshot) {
+		cmd.Fatal(errors.New("snapshot mismatch"))
+	} else if newPreservesExecutability != preservesExecutability {
+		cmd.Fatal(errors.Errorf(
+			"preserves executability mismatch: %t != %t",
+			newPreservesExecutability,
+			preservesExecutability,
+		))
+	} else if newDecomposesUnicode != decomposesUnicode {
+		cmd.Fatal(errors.Errorf(
+			"decomposes Unicode mismatch: %t != %t",
+			newDecomposesUnicode,
+			decomposesUnicode,
+		))
+	} else if !newCache.Equal(cache) {
+		cmd.Fatal(errors.New("cache mismatch"))
+	} else if len(newIgnoreCache) != len(ignoreCache) {
+		cmd.Fatal(errors.New("ignore cache length mismatch"))
+	} else if !ignoreCachesIntersectionEqual(newIgnoreCache, ignoreCache) {
+		cmd.Fatal(errors.New("ignore cache mismatch"))
+	}
+
+	// Perform an accelerated scan (with a re-check path). If requested, enable
+	// CPU and memory profiling.
+	if enableProfile {
+		if profiler, err = profile.New("scan_accelerated_recheck"); err != nil {
+			cmd.Fatal(errors.Wrap(err, "unable to create profiler"))
+		}
+	}
+	start = time.Now()
+	newSnapshot, newPreservesExecutability, newDecomposesUnicode, newCache, newIgnoreCache, err = sync.Scan(
+		path,
+		snapshot,
+		map[string]bool{"fake path": true},
+		sha1.New(),
+		cache,
+		ignores,
+		ignoreCache,
+		behavior.ProbeMode_ProbeModeProbe,
+		sync.SymlinkMode_SymlinkModePortable,
+	)
+	if err != nil {
+		cmd.Fatal(errors.Wrap(err, "unable to create snapshot"))
+	} else if snapshot == nil {
+		cmd.Fatal(errors.New("target has been deleted since original snapshot"))
+	}
+	stop = time.Now()
+	if enableProfile {
+		if err = profiler.Finalize(); err != nil {
+			cmd.Fatal(errors.Wrap(err, "unable to finalize profiler"))
+		}
+		profiler = nil
+	}
+	fmt.Println("Accelerated scan (with re-check paths) took", stop.Sub(start))
+
+	// Compare the accelerated scan results with the baseline results.
+	if !newSnapshot.Equal(snapshot) {
+		cmd.Fatal(errors.New("snapshot mismatch"))
+	} else if newPreservesExecutability != preservesExecutability {
+		cmd.Fatal(errors.Errorf(
+			"preserves executability mismatch: %t != %t",
+			newPreservesExecutability,
+			preservesExecutability,
+		))
+	} else if newDecomposesUnicode != decomposesUnicode {
+		cmd.Fatal(errors.Errorf(
+			"decomposes Unicode mismatch: %t != %t",
+			newDecomposesUnicode,
+			decomposesUnicode,
+		))
+	} else if !newCache.Equal(cache) {
+		cmd.Fatal(errors.New("cache mismatch"))
+	} else if !ignoreCachesIntersectionEqual(newIgnoreCache, ignoreCache) {
+		cmd.Fatal(errors.New("ignore cache mismatch"))
+	}
+
+	// Perform an accelerated scan (without any re-check paths). If requested,
+	// enable CPU and memory profiling.
+	if enableProfile {
+		if profiler, err = profile.New("scan_accelerated_no_recheck"); err != nil {
+			cmd.Fatal(errors.Wrap(err, "unable to create profiler"))
+		}
+	}
+	start = time.Now()
+	newSnapshot, newPreservesExecutability, newDecomposesUnicode, newCache, newIgnoreCache, err = sync.Scan(
+		path,
+		snapshot,
+		nil,
+		sha1.New(),
+		cache,
+		ignores,
+		ignoreCache,
+		behavior.ProbeMode_ProbeModeProbe,
+		sync.SymlinkMode_SymlinkModePortable,
+	)
+	if err != nil {
+		cmd.Fatal(errors.Wrap(err, "unable to create snapshot"))
+	} else if snapshot == nil {
+		cmd.Fatal(errors.New("target has been deleted since original snapshot"))
+	}
+	stop = time.Now()
+	if enableProfile {
+		if err = profiler.Finalize(); err != nil {
+			cmd.Fatal(errors.Wrap(err, "unable to finalize profiler"))
+		}
+		profiler = nil
+	}
+	fmt.Println("Accelerated scan (without re-check paths) took", stop.Sub(start))
+
+	// Compare the accelerated scan results with the baseline results.
+	if !newSnapshot.Equal(snapshot) {
+		cmd.Fatal(errors.New("snapshot mismatch"))
+	} else if newPreservesExecutability != preservesExecutability {
+		cmd.Fatal(errors.Errorf(
+			"preserves executability mismatch: %t != %t",
+			newPreservesExecutability,
+			preservesExecutability,
+		))
+	} else if newDecomposesUnicode != decomposesUnicode {
+		cmd.Fatal(errors.Errorf(
+			"decomposes Unicode mismatch: %t != %t",
+			newDecomposesUnicode,
+			decomposesUnicode,
+		))
+	} else if !newCache.Equal(cache) {
+		cmd.Fatal(errors.New("cache mismatch"))
+	} else if !ignoreCachesIntersectionEqual(newIgnoreCache, ignoreCache) {
+		cmd.Fatal(errors.New("ignore cache mismatch"))
+	}
+
+	// Validate the snapshot.
+	start = time.Now()
+	if err := snapshot.EnsureValid(); err != nil {
+		cmd.Fatal(errors.Wrap(err, "snapshot invalid"))
+	}
+	stop = time.Now()
+	fmt.Println("Snapshot validation took", stop.Sub(start))
+
+	// Count entries.
+	start = time.Now()
+	snapshot.Count()
+	stop = time.Now()
+	fmt.Println("Snapshot entry counting took", stop.Sub(start))
+
+	// Perform a deep copy of the snapshot.
+	start = time.Now()
+	snapshot.Copy()
+	stop = time.Now()
+	fmt.Println("Snapshot copying took", stop.Sub(start))
 
 	// Serialize it.
 	if enableProfile {
@@ -196,10 +385,6 @@ func main() {
 	sha1.Sum(serializedSnapshot)
 	stop = time.Now()
 	fmt.Println("SHA-1 snapshot digest took", stop.Sub(start))
-
-	// TODO: I'd like to add a copy benchmark since copying is used in a lot of
-	// our transformation functions, but I also don't want to expose this
-	// function publicly.
 
 	// Serialize the cache.
 	if enableProfile {

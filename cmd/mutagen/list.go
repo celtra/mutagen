@@ -11,6 +11,7 @@ import (
 	"github.com/fatih/color"
 
 	"github.com/havoc-io/mutagen/cmd"
+	"github.com/havoc-io/mutagen/pkg/grpcutil"
 	sessionsvcpkg "github.com/havoc-io/mutagen/pkg/service/session"
 	sessionpkg "github.com/havoc-io/mutagen/pkg/session"
 	"github.com/havoc-io/mutagen/pkg/sync"
@@ -118,8 +119,18 @@ func printConflicts(conflicts []*sync.Conflict) {
 }
 
 func listMain(command *cobra.Command, arguments []string) error {
+	// Create session selection specification.
+	selection := &sessionpkg.Selection{
+		All:            len(arguments) == 0 && listConfiguration.labelSelector == "",
+		Specifications: arguments,
+		LabelSelector:  listConfiguration.labelSelector,
+	}
+	if err := selection.EnsureValid(); err != nil {
+		return errors.Wrap(err, "invalid session selection specification")
+	}
+
 	// Connect to the daemon and defer closure of the connection.
-	daemonConnection, err := createDaemonClientConnection()
+	daemonConnection, err := createDaemonClientConnection(true)
 	if err != nil {
 		return errors.Wrap(err, "unable to connect to daemon")
 	}
@@ -130,20 +141,13 @@ func listMain(command *cobra.Command, arguments []string) error {
 
 	// Invoke list.
 	request := &sessionsvcpkg.ListRequest{
-		Specifications: arguments,
+		Selection: selection,
 	}
 	response, err := sessionService.List(context.Background(), request)
 	if err != nil {
-		return errors.Wrap(peelAwayRPCErrorLayer(err), "list failed")
+		return errors.Wrap(grpcutil.PeelAwayRPCErrorLayer(err), "list failed")
 	} else if err = response.EnsureValid(); err != nil {
 		return errors.Wrap(err, "invalid list response received")
-	}
-
-	// Validate the list response contents.
-	for _, s := range response.SessionStates {
-		if err = s.EnsureValid(); err != nil {
-			return errors.Wrap(err, "invalid session state detected in response")
-		}
 	}
 
 	// Loop through and print sessions.
@@ -179,11 +183,17 @@ var listConfiguration struct {
 	help bool
 	// long indicates whether or not to use long-format listing.
 	long bool
+	// labelSelector encodes a label selector to be used in identifying which
+	// sessions should be paused.
+	labelSelector string
 }
 
 func init() {
 	// Grab a handle for the command line flags.
 	flags := listCommand.Flags()
+
+	// Disable alphabetical sorting of flags in help output.
+	flags.SortFlags = false
 
 	// Manually add a help flag to override the default message. Cobra will
 	// still implement its logic automatically.
@@ -191,4 +201,5 @@ func init() {
 
 	// Wire up list flags.
 	flags.BoolVarP(&listConfiguration.long, "long", "l", false, "Show detailed session information")
+	flags.StringVar(&listConfiguration.labelSelector, "label-selector", "", "List sessions matching the specified label selector")
 }

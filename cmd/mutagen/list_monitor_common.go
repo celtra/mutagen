@@ -2,13 +2,23 @@ package main
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/dustin/go-humanize"
 
-	"github.com/havoc-io/mutagen/pkg/filesystem"
 	sessionpkg "github.com/havoc-io/mutagen/pkg/session"
-	"github.com/havoc-io/mutagen/pkg/sync"
 	urlpkg "github.com/havoc-io/mutagen/pkg/url"
+)
+
+const (
+	// maxUint64Description is a human-friendly mathematic description of
+	// math.MaxUint64.
+	maxUint64Description = "2⁶⁴−1"
+
+	// emptyLabelValueDescription is a human-friendly description representing
+	// an empty label value. It contains characters which are invalid for use in
+	// label values, so it won't be confused for one.
+	emptyLabelValueDescription = "<empty>"
 )
 
 func printEndpoint(name string, url *urlpkg.URL, configuration *sessionpkg.Configuration, version sessionpkg.Version) {
@@ -27,7 +37,7 @@ func printEndpoint(name string, url *urlpkg.URL, configuration *sessionpkg.Confi
 
 	// Compute and print the watch polling interval, so long as we're not in
 	// no-watch mode.
-	if configuration.WatchMode != filesystem.WatchMode_WatchModeNoWatch {
+	if configuration.WatchMode != sessionpkg.WatchMode_WatchModeNoWatch {
 		var watchPollingIntervalDescription string
 		if configuration.WatchPollingInterval == 0 {
 			watchPollingIntervalDescription = fmt.Sprintf("Default (%d seconds)", version.DefaultWatchPollingInterval())
@@ -36,6 +46,27 @@ func printEndpoint(name string, url *urlpkg.URL, configuration *sessionpkg.Confi
 		}
 		fmt.Println("\tWatch polling interval:", watchPollingIntervalDescription)
 	}
+
+	// Compute and print the probe mode.
+	probeModeDescription := configuration.ProbeMode.Description()
+	if configuration.ProbeMode.IsDefault() {
+		probeModeDescription += fmt.Sprintf(" (%s)", version.DefaultProbeMode().Description())
+	}
+	fmt.Println("\tProbe mode:", probeModeDescription)
+
+	// Compute and print the scan mode.
+	scanModeDescription := configuration.ScanMode.Description()
+	if configuration.ScanMode.IsDefault() {
+		scanModeDescription += fmt.Sprintf(" (%s)", version.DefaultScanMode().Description())
+	}
+	fmt.Println("\tScan mode:", scanModeDescription)
+
+	// Compute and print the staging mode.
+	stageModeDescription := configuration.StageMode.Description()
+	if configuration.StageMode.IsDefault() {
+		stageModeDescription += fmt.Sprintf(" (%s)", version.DefaultStageMode().Description())
+	}
+	fmt.Println("\tStage mode:", stageModeDescription)
 
 	// Compute and print the default file mode.
 	var defaultFileModeDescription string
@@ -74,6 +105,21 @@ func printSession(state *sessionpkg.State, long bool) {
 	// Print the session identifier.
 	fmt.Println("Session:", state.Session.Identifier)
 
+	// Print labels.
+	if len(state.Session.Labels) > 0 {
+		fmt.Println("Labels:")
+		keys := sessionpkg.ExtractAndSortLabelKeys(state.Session.Labels)
+		for _, key := range keys {
+			value := state.Session.Labels[key]
+			if value == "" {
+				value = emptyLabelValueDescription
+			}
+			fmt.Printf("\t%s: %s\n", key, value)
+		}
+	} else {
+		fmt.Println("Labels: None")
+	}
+
 	// Print extended information, if desired.
 	if long {
 		// Print the configuration header.
@@ -91,26 +137,37 @@ func printSession(state *sessionpkg.State, long bool) {
 		fmt.Println("\tSynchronization mode:", synchronizationMode)
 
 		// Compute and print maximum entry count.
+		var maximumEntryCountDescription string
 		if configuration.MaximumEntryCount == 0 {
-			fmt.Println("\tMaximum entry count: Unlimited")
+			if m := state.Session.Version.DefaultMaximumEntryCount(); m == math.MaxUint64 {
+				maximumEntryCountDescription = fmt.Sprintf("Default (%s)", maxUint64Description)
+			} else {
+				maximumEntryCountDescription = fmt.Sprintf("Default (%d)", m)
+			}
 		} else {
-			fmt.Println("\tMaximum entry count:", configuration.MaximumEntryCount)
+			maximumEntryCountDescription = fmt.Sprintf("%d", configuration.MaximumEntryCount)
 		}
+		fmt.Println("\tMaximum allowed entry count:", maximumEntryCountDescription)
 
 		// Compute and print maximum staging file size.
+		var maximumStagingFileSizeDescription string
 		if configuration.MaximumStagingFileSize == 0 {
-			fmt.Println("\tMaximum staging file size: Unlimited")
+			maximumStagingFileSizeDescription = fmt.Sprintf(
+				"Default (%s)",
+				humanize.Bytes(state.Session.Version.DefaultMaximumStagingFileSize()),
+			)
 		} else {
-			fmt.Printf(
-				"\tMaximum staging file size: %d (%s)\n",
+			maximumStagingFileSizeDescription = fmt.Sprintf(
+				"%d (%s)",
 				configuration.MaximumStagingFileSize,
 				humanize.Bytes(configuration.MaximumStagingFileSize),
 			)
 		}
+		fmt.Println("\tMaximum staging file size:", maximumStagingFileSizeDescription)
 
 		// Compute and print symlink mode.
 		symlinkModeDescription := configuration.SymlinkMode.Description()
-		if configuration.SymlinkMode == sync.SymlinkMode_SymlinkDefault {
+		if configuration.SymlinkMode.IsDefault() {
 			defaultSymlinkMode := state.Session.Version.DefaultSymlinkMode()
 			symlinkModeDescription += fmt.Sprintf(" (%s)", defaultSymlinkMode.Description())
 		}
@@ -118,7 +175,7 @@ func printSession(state *sessionpkg.State, long bool) {
 
 		// Compute and print the VCS ignore mode.
 		ignoreVCSModeDescription := configuration.IgnoreVCSMode.Description()
-		if configuration.IgnoreVCSMode == sync.IgnoreVCSMode_IgnoreVCSDefault {
+		if configuration.IgnoreVCSMode.IsDefault() {
 			defaultIgnoreVCSMode := state.Session.Version.DefaultIgnoreVCSMode()
 			ignoreVCSModeDescription += fmt.Sprintf(" (%s)", defaultIgnoreVCSMode.Description())
 		}

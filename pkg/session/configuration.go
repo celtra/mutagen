@@ -3,50 +3,18 @@ package session
 import (
 	"github.com/pkg/errors"
 
-	"github.com/havoc-io/mutagen/pkg/configuration"
 	"github.com/havoc-io/mutagen/pkg/filesystem"
 	"github.com/havoc-io/mutagen/pkg/sync"
 )
 
-// ConfigurationSourceType specifies the source and type of a Configuration
-// object. Knowledge of this information is required to appropriately validate a
-// Configuration object.
-type ConfigurationSourceType uint8
-
-const (
-	// ConfigurationSourceTypeSession indicates a session Configuration object
-	// sourced from a Session object stored on disk.
-	ConfigurationSourceTypeSession ConfigurationSourceType = iota
-	// ConfigurationSourceTypeGlobal indicates a session Configuration object
-	// sourced from the global configuration file.
-	ConfigurationSourceTypeGlobal
-	// ConfigurationSourceTypeCreate indicates a session Configuration object
-	// sourced from a create RPC request.
-	ConfigurationSourceTypeCreate
-	// ConfigurationSourceTypeSessionEndpointSpecific indicates an endpoint-
-	// specific session Configuration object sourced from a Session object
-	// stored on disk.
-	ConfigurationSourceTypeSessionEndpointSpecific
-	// ConfigurationSourceTypeCreateEndpointSpecific indicates an endpoint-
-	// specific session Configuration object sourced from a create RPC request.
-	ConfigurationSourceTypeCreateEndpointSpecific
-	// ConfigurationSourceTypeAPIEndpointSpecific indicates an endpoint-specific
-	// session Configuration object provided directly to an endpoint.
-	ConfigurationSourceTypeAPIEndpointSpecific
-)
-
-// EnsureValid ensures that Configuration's invariants are respected.
-func (c *Configuration) EnsureValid(source ConfigurationSourceType) error {
+// EnsureValid ensures that Configuration's invariants are respected. The
+// validation of the configuration depends on whether or not it is
+// endpoint-specific.
+func (c *Configuration) EnsureValid(endpointSpecific bool) error {
 	// A nil configuration is not considered valid.
 	if c == nil {
 		return errors.New("nil configuration")
 	}
-
-	// Determine whether or not this is an endpoint-specific Configuration
-	// object.
-	endpointSpecific := source == ConfigurationSourceTypeSessionEndpointSpecific ||
-		source == ConfigurationSourceTypeCreateEndpointSpecific ||
-		source == ConfigurationSourceTypeAPIEndpointSpecific
 
 	// Validate the synchronization mode.
 	if endpointSpecific {
@@ -64,6 +32,21 @@ func (c *Configuration) EnsureValid(source ConfigurationSourceType) error {
 
 	// The maximum staging file size doesn't need to be validated - any of its
 	// values are technically valid regardless of the source.
+
+	// Verify that the probe mode is unspecified or supported for usage.
+	if !(c.ProbeMode.IsDefault() || c.ProbeMode.Supported()) {
+		return errors.New("unknown or unsupported probe mode")
+	}
+
+	// Verify that the scan mode is unspecified or supported for usage.
+	if !(c.ScanMode.IsDefault() || c.ScanMode.Supported()) {
+		return errors.New("unknown or unsupported scan mode")
+	}
+
+	// Verify that the staging mode is unspecified or supported for usage.
+	if !(c.StageMode.IsDefault() || c.StageMode.Supported()) {
+		return errors.New("unknown or unsupported staging mode")
+	}
 
 	// Verify that the symlink mode.
 	if endpointSpecific {
@@ -84,12 +67,13 @@ func (c *Configuration) EnsureValid(source ConfigurationSourceType) error {
 	// The watch polling interval doesn't need to be validated - any of its
 	// values are technically valid regardless of the source.
 
-	// Verify that default ignores are unset, unless this is a Configuration
-	// object sourced from an existing Session. If there are any allowed
-	// DefaultIgnores, verify that they're valid. This field is deprecated and
-	// no longer used.
-	if source != ConfigurationSourceTypeSession && len(c.DefaultIgnores) > 0 {
-		return errors.New("deprecated default ignores configuration field specified")
+	// Verify that default ignores are unset for endpoint-specific
+	// configurations and that any specified ignores are valid. This field is
+	// deprecated, but existing sessions may have it set, in which case we'll
+	// just prepend it to the nominal list of ignores when running the session.
+	// We don't bother rejecting its presence based on source.
+	if endpointSpecific && len(c.DefaultIgnores) > 0 {
+		return errors.New("default ignores cannot be specified on an endpoint-specific basis (and are deprecated)")
 	}
 	for _, ignore := range c.DefaultIgnores {
 		if !sync.ValidIgnorePattern(ignore) {
@@ -151,41 +135,6 @@ func (c *Configuration) EnsureValid(source ConfigurationSourceType) error {
 	return nil
 }
 
-// snapshotGlobalConfiguration loads the global configuration, transfers the
-// relevant parameters to a session configuration, and returns the resulting
-// value. It does not validate the
-func snapshotGlobalConfiguration() (*Configuration, error) {
-	// Load the global configuration.
-	configuration, err := configuration.Load()
-	if err != nil {
-		return nil, errors.Wrap(err, "unable to load global configuration")
-	}
-
-	// Create a session configuration object.
-	result := &Configuration{
-		SynchronizationMode:    configuration.Synchronization.Mode,
-		MaximumEntryCount:      configuration.Synchronization.MaximumEntryCount,
-		MaximumStagingFileSize: uint64(configuration.Synchronization.MaximumStagingFileSize),
-		SymlinkMode:            configuration.Symlink.Mode,
-		WatchMode:              configuration.Watch.Mode,
-		WatchPollingInterval:   configuration.Watch.PollingInterval,
-		Ignores:                configuration.Ignore.Default,
-		IgnoreVCSMode:          configuration.Ignore.VCS,
-		DefaultFileMode:        uint32(configuration.Permissions.DefaultFileMode),
-		DefaultDirectoryMode:   uint32(configuration.Permissions.DefaultDirectoryMode),
-		DefaultOwner:           configuration.Permissions.DefaultOwner,
-		DefaultGroup:           configuration.Permissions.DefaultGroup,
-	}
-
-	// Verify that the resulting configuration is valid.
-	if err := result.EnsureValid(ConfigurationSourceTypeGlobal); err != nil {
-		return nil, errors.Wrap(err, "global configuration invalid")
-	}
-
-	// Success.
-	return result, nil
-}
-
 // MergeConfigurations merges two configurations of differing priorities. Both
 // configurations must be non-nil.
 func MergeConfigurations(lower, higher *Configuration) *Configuration {
@@ -211,6 +160,27 @@ func MergeConfigurations(lower, higher *Configuration) *Configuration {
 		result.MaximumStagingFileSize = higher.MaximumStagingFileSize
 	} else {
 		result.MaximumStagingFileSize = lower.MaximumStagingFileSize
+	}
+
+	// Merge probe mode.
+	if !higher.ProbeMode.IsDefault() {
+		result.ProbeMode = higher.ProbeMode
+	} else {
+		result.ProbeMode = lower.ProbeMode
+	}
+
+	// Merge scan mode.
+	if !higher.ScanMode.IsDefault() {
+		result.ScanMode = higher.ScanMode
+	} else {
+		result.ScanMode = lower.ScanMode
+	}
+
+	// Merge staging mode.
+	if !higher.StageMode.IsDefault() {
+		result.StageMode = higher.StageMode
+	} else {
+		result.StageMode = lower.StageMode
 	}
 
 	// Merge symlink mode.

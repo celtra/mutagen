@@ -9,11 +9,11 @@ import (
 	"github.com/pkg/errors"
 )
 
-// markHidden ensures that a path is hidden.
-func markHidden(path string) error {
+// MarkHidden ensures that a path is hidden.
+func MarkHidden(path string) error {
 	// POSIX platforms don't have the notion of a hidden attribute, they only
 	// hide dot-prefixed paths, so ensure that the path begins with a dot.
-	if strings.IndexRune(filepath.Base(path), '.') != 0 {
+	if strings.IndexByte(filepath.Base(path), '.') != 0 {
 		return errors.New("only dot-prefixed files are hidden on POSIX")
 	}
 

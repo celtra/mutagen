@@ -26,8 +26,11 @@ func daemonStopMain(command *cobra.Command, arguments []string) error {
 		return nil
 	}
 
-	// Connect to the daemon and defer closure of the connection.
-	daemonConnection, err := createDaemonClientConnection()
+	// Connect to the daemon and defer closure of the connection. We avoid
+	// version compatibility checks since they would remove the ability to
+	// terminate an incompatible daemon. This is fine since the daemon service
+	// portion of the daemon API is stable.
+	daemonConnection, err := createDaemonClientConnection(false)
 	if err != nil {
 		return errors.Wrap(err, "unable to connect to daemon")
 	}
@@ -59,6 +62,9 @@ var daemonStopConfiguration struct {
 func init() {
 	// Grab a handle for the command line flags.
 	flags := daemonStopCommand.Flags()
+
+	// Disable alphabetical sorting of flags in help output.
+	flags.SortFlags = false
 
 	// Manually add a help flag to override the default message. Cobra will
 	// still implement its logic automatically.

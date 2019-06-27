@@ -11,6 +11,7 @@ import (
 	"github.com/fatih/color"
 
 	"github.com/havoc-io/mutagen/cmd"
+	"github.com/havoc-io/mutagen/pkg/grpcutil"
 	sessionsvcpkg "github.com/havoc-io/mutagen/pkg/service/session"
 	sessionpkg "github.com/havoc-io/mutagen/pkg/session"
 )
@@ -57,18 +58,26 @@ func computeMonitorStatusLine(state *sessionpkg.State) string {
 }
 
 func monitorMain(command *cobra.Command, arguments []string) error {
-	// Parse session specification.
+	// Create session selection specification. If we don't extract an explicit
+	// session specifier now, then it'll be determined automatically after the
+	// first listing.
 	var session string
-	var specifications []string
 	if len(arguments) == 1 {
 		session = arguments[0]
-		specifications = []string{session}
 	} else if len(arguments) > 1 {
 		return errors.New("multiple session specification not allowed")
 	}
+	selection := &sessionpkg.Selection{
+		All:            len(arguments) == 0 && monitorConfiguration.labelSelector == "",
+		Specifications: arguments,
+		LabelSelector:  monitorConfiguration.labelSelector,
+	}
+	if err := selection.EnsureValid(); err != nil {
+		return errors.Wrap(err, "invalid session selection specification")
+	}
 
 	// Connect to the daemon and defer closure of the connection.
-	daemonConnection, err := createDaemonClientConnection()
+	daemonConnection, err := createDaemonClientConnection(true)
 	if err != nil {
 		return errors.Wrap(err, "unable to connect to daemon")
 	}
@@ -89,37 +98,40 @@ func monitorMain(command *cobra.Command, arguments []string) error {
 		// need to grab all sessions and identify the most recently created one
 		// for future queries.
 		request := &sessionsvcpkg.ListRequest{
+			Selection:          selection,
 			PreviousStateIndex: previousStateIndex,
-			Specifications:     specifications,
 		}
 
 		// Invoke list.
 		response, err := sessionService.List(context.Background(), request)
 		if err != nil {
-			return errors.Wrap(peelAwayRPCErrorLayer(err), "list failed")
+			return errors.Wrap(grpcutil.PeelAwayRPCErrorLayer(err), "list failed")
 		} else if err = response.EnsureValid(); err != nil {
 			return errors.Wrap(err, "invalid list response received")
 		}
 
-		// Validate the list response contents.
-		for _, s := range response.SessionStates {
-			if err = s.EnsureValid(); err != nil {
-				return errors.Wrap(err, "invalid session state detected in response")
-			}
-		}
-
 		// Validate the response and extract the relevant session state. If no
-		// session has been specified and it's our first time through the loop,
-		// identify the most recently created session.
+		// session has been explicitly specified and it's our first time through
+		// the loop, then set up monitoring to use the one session identified by
+		// the label selector or the most recently created session (which will
+		// be the last in the returned results).
 		var state *sessionpkg.State
 		previousStateIndex = response.StateIndex
 		if session == "" {
 			if len(response.SessionStates) == 0 {
-				err = errors.New("no sessions exist")
+				if monitorConfiguration.labelSelector != "" {
+					err = errors.New("no matching sessions exist")
+				} else {
+					err = errors.New("no sessions exist")
+				}
+			} else if monitorConfiguration.labelSelector != "" && len(response.SessionStates) > 1 {
+				err = errors.New("label selector matched multiple sessions")
 			} else {
 				state = response.SessionStates[len(response.SessionStates)-1]
 				session = state.Session.Identifier
-				specifications = []string{session}
+				selection = &sessionpkg.Selection{
+					Specifications: []string{session},
+				}
 			}
 		} else if len(response.SessionStates) != 1 {
 			err = errors.New("invalid list response")
@@ -156,7 +168,7 @@ func monitorMain(command *cobra.Command, arguments []string) error {
 
 var monitorCommand = &cobra.Command{
 	Use:   "monitor [<session>]",
-	Short: "Shows a dynamic status display for the specified session",
+	Short: "Shows a dynamic status display for a single session",
 	Run:   cmd.Mainify(monitorMain),
 }
 
@@ -166,11 +178,17 @@ var monitorConfiguration struct {
 	help bool
 	// long indicates whether or not to use long-format monitoring.
 	long bool
+	// labelSelector encodes a label selector to be used in identifying which
+	// sessions should be paused.
+	labelSelector string
 }
 
 func init() {
 	// Grab a handle for the command line flags.
 	flags := monitorCommand.Flags()
+
+	// Disable alphabetical sorting of flags in help output.
+	flags.SortFlags = false
 
 	// Manually add a help flag to override the default message. Cobra will
 	// still implement its logic automatically.
@@ -178,4 +196,5 @@ func init() {
 
 	// Wire up monitor flags.
 	flags.BoolVarP(&monitorConfiguration.long, "long", "l", false, "Show detailed session information")
+	flags.StringVar(&monitorConfiguration.labelSelector, "label-selector", "", "Monitor the most recently created session matching the specified label selector")
 }
