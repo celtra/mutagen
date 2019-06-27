@@ -9,25 +9,11 @@ import (
 const (
 	// KubectlURLPrefix is the lowercase version of the Kubectl URL prefix.
 	KubectlURLPrefix = "kubectl://"
-
-	// KubectlHostEnvironmentVariable is the name of the KUBECTL_HOST environment
-	// variable.
-	KubectlHostEnvironmentVariable = "KUBECTL_HOST"
-	// KubectlTLSVerifyEnvironmentVariable is the name of the KUBECTL_TLS_VERIFY
-	// environment variable.
-	KubectlTLSVerifyEnvironmentVariable = "KUBECTL_TLS_VERIFY"
-	// KubectlCertPathEnvironmentVariable is the name of the KUBECTL_CERT_PATH
-	// environment variable.
-	KubectlCertPathEnvironmentVariable = "KUBECTL_CERT_PATH"
 )
 
 // KubectlEnvironmentVariables is a list of Kubectl environment variables that
 // should be locked in to the URL at parse time.
-var KubectlEnvironmentVariables = []string{
-	KubectlHostEnvironmentVariable,
-	KubectlTLSVerifyEnvironmentVariable,
-	KubectlCertPathEnvironmentVariable,
-}
+var KubectlEnvironmentVariables = []string{}
 
 // isKubectlURL checks whether or not a URL is a Kubectl URL.
 func isKubectlURL(raw string) bool {
